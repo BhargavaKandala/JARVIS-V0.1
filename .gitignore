@@ -1,0 +1,10 @@
+# Secrets and Environment Variables
+.env
+keys.json
+secrets/
+
+# Dependencies (Example for Node or Python)
+node_modules/
+__pycache__/
+venv/
+.DS_Store

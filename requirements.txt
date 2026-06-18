@@ -1,0 +1,15 @@
+langgraph
+langchain
+langchain-core
+langchain-google-genai
+python-dotenv
+speechrecognition
+pyaudio
+pyttsx3
+requests
+newsapi-python
+openai
+fastapi
+uvicorn
+pydantic
+rich
