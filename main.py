@@ -5,7 +5,7 @@ from voice.wakeword import detect_wake_word
 from llm.gemini import ask_gemini
 
 def main():
-    speak("Jarvis is online. Waiting for wake word.")
+    speak("Hello, Jarvis is online. Waiting for wake word.")
     
     while True:
         # OUTER LOOP: Waiting for wake word
@@ -33,8 +33,16 @@ def main():
                     break # Breaks the inner loop, returns to outer loop
                     
                 # If it's a regular question, ask Gemini
-                response = ask_gemini(query)
-                speak(response)
+                try:
+                    response = ask_gemini(query)
+                    speak(response)
+                except Exception as e:
+                    error_msg = str(e)
+                    if "429" in error_msg or "RESOURCE_EXHAUSTED" in error_msg:
+                        speak("Boss, Google is rate limiting my API. Give me about 30 seconds to cool down.")
+                    else:
+                        print(f"[*] Brain Error: {error_msg}")
+                        speak("I encountered a critical error in my cognitive engine.")
 
 if __name__ == "__main__":
     main()
