@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.12"
 dependencies = [
+    "customtkinter>=5.2.2",
     "edge-tts>=7.2.8",
     "faster-whisper>=1.2.1",
     "kokoro-onnx>=0.5.0",

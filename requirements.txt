@@ -58,6 +58,10 @@ csvw==4.0.0
     # via segments
 ctranslate2==4.8.0
     # via faster-whisper
+customtkinter==5.2.2
+    # via jarvis-v0-1 (pyproject.toml)
+darkdetect==0.8.0
+    # via customtkinter
 distro==1.9.0
     # via google-genai
 dlinfo==2.0.0
@@ -191,6 +195,7 @@ ormsgpack==1.12.2
     # via langgraph-checkpoint
 packaging==26.2
     # via
+    #   customtkinter
     #   huggingface-hub
     #   langchain-core
     #   langsmith
