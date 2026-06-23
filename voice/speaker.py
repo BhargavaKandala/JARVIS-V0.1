@@ -1,26 +1,24 @@
 # voice/speaker.py
-import edge_tts
-import pygame
-import asyncio
-import os
+import sounddevice as sd
+from kokoro_onnx import Kokoro
 
-# This completely bypasses the pyttsx3 Windows loop crashes
-async def _speak_async(text: str):
-    print(f"Jarvis: {text}")
-    voice = "en-US-ChristopherNeural" # High quality male voice
-    communicate = edge_tts.Communicate(text, voice)
-    await communicate.save("temp_speech.mp3")
-
-    pygame.mixer.init()
-    pygame.mixer.music.load("temp_speech.mp3")
-    pygame.mixer.music.play()
-
-    while pygame.mixer.music.get_busy():
-        pygame.time.Clock().tick(10)
-
-    pygame.mixer.quit()
-    os.remove("temp_speech.mp3")
+print("Loading Kokoro v1.0 Voice Engine...")
+# Initialize the local engine with the new v1.0 files
+kokoro = Kokoro("kokoro-v1.0.onnx", "voices-v1.0.bin")
 
 def speak(text: str):
-    """Wrapper to run the async TTS in the main loop."""
-    asyncio.run(_speak_async(text))
+    """Generates 100% local, high-fidelity speech using Kokoro v1.0."""
+    print(f"Jarvis: {text}")
+    
+    try:
+        # Generate the audio array. "af_heart" is a great American Female voice.
+        samples, sample_rate = kokoro.create(
+            text, voice="af_heart", speed=1.0, lang="en-us"
+        )
+        
+        # Play the audio synchronously through your speakers
+        sd.play(samples, sample_rate)
+        sd.wait() 
+        
+    except Exception as e:
+        print(f"[*] Voice Engine Error: {e}")
