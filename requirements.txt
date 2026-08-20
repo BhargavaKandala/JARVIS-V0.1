@@ -86,16 +86,37 @@ frozenlist==1.8.0
     #   aiosignal
 fsspec==2026.6.0
     # via huggingface-hub
+google-api-core==2.31.0
+    # via google-api-python-client
+google-api-python-client==2.198.0
+    # via jarvis-v0-1 (pyproject.toml)
 google-auth==2.55.0
-    # via google-genai
+    # via
+    #   google-api-core
+    #   google-api-python-client
+    #   google-auth-httplib2
+    #   google-auth-oauthlib
+    #   google-genai
+google-auth-httplib2==0.4.0
+    # via
+    #   jarvis-v0-1 (pyproject.toml)
+    #   google-api-python-client
+google-auth-oauthlib==1.4.0
+    # via jarvis-v0-1 (pyproject.toml)
 google-genai==2.9.0
     # via langchain-google-genai
+googleapis-common-protos==1.75.0
+    # via google-api-core
 h11==0.16.0
     # via httpcore
 hf-xet==1.5.1
     # via huggingface-hub
 httpcore==1.0.9
     # via httpx
+httplib2==0.32.0
+    # via
+    #   google-api-python-client
+    #   google-auth-httplib2
 httpx==0.28.1
     # via
     #   google-genai
@@ -183,6 +204,8 @@ numpy==2.4.6
     #   onnxruntime
     #   scipy
     #   soundfile
+oauthlib==3.3.1
+    # via requests-oauthlib
 onnxruntime==1.27.0
     # via
     #   faster-whisper
@@ -200,16 +223,25 @@ packaging==26.2
     #   langchain-core
     #   langsmith
     #   onnxruntime
+    #   pytesseract
 phonemizer-fork==3.3.2
     # via kokoro-onnx
 pillow==12.2.0
-    # via pywhatkit
+    # via
+    #   pytesseract
+    #   pywhatkit
 propcache==0.5.2
     # via
     #   aiohttp
     #   yarl
+proto-plus==1.28.0
+    # via google-api-core
 protobuf==7.35.1
-    # via onnxruntime
+    # via
+    #   google-api-core
+    #   googleapis-common-protos
+    #   onnxruntime
+    #   proto-plus
 pyasn1==0.6.3
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -239,7 +271,9 @@ pygments==2.20.0
 pymsgbox==2.0.1
     # via pyautogui
 pyparsing==3.3.2
-    # via rdflib
+    # via
+    #   httplib2
+    #   rdflib
 pyperclip==1.11.0
     # via mouseinfo
 pypiwin32==223
@@ -248,6 +282,8 @@ pyrect==0.2.0
     # via pygetwindow
 pyscreeze==1.0.1
     # via pyautogui
+pytesseract==0.3.13
+    # via jarvis-v0-1 (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via csvw
 python-dotenv==1.2.2
@@ -278,12 +314,16 @@ regex==2026.5.9
 requests==2.34.2
     # via
     #   jarvis-v0-1 (pyproject.toml)
+    #   google-api-core
     #   google-auth
     #   google-genai
     #   langsmith
     #   pywhatkit
+    #   requests-oauthlib
     #   requests-toolbelt
     #   wikipedia
+requests-oauthlib==2.0.0
+    # via google-auth-oauthlib
 requests-toolbelt==1.0.0
     # via langsmith
 rfc3986==1.5.0
@@ -351,7 +391,9 @@ typing-extensions==4.15.0
 typing-inspection==0.4.2
     # via pydantic
 uritemplate==4.2.0
-    # via csvw
+    # via
+    #   csvw
+    #   google-api-python-client
 urllib3==2.7.0
     # via requests
 uuid-utils==0.16.2

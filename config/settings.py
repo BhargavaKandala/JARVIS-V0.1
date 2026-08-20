@@ -8,5 +8,18 @@ os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY if GOOGLE_API_KEY else ""
 
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+
+_CONFIG_DIR = os.path.dirname(__file__)
+_DATA_DIR = os.path.join(_CONFIG_DIR, "..", "data")
+
+GOOGLE_CALENDAR_CREDENTIALS_PATH = os.getenv(
+    "GOOGLE_CALENDAR_CREDENTIALS_PATH",
+    os.path.join(_CONFIG_DIR, "google_calendar_credentials.json"),
+)
+GOOGLE_CALENDAR_TOKEN_PATH = os.getenv(
+    "GOOGLE_CALENDAR_TOKEN_PATH",
+    os.path.join(_DATA_DIR, "google_calendar_token.json"),
+)
 
 FORCE_TEXT_MODE = True
