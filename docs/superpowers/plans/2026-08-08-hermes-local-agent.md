@@ -1903,11 +1903,22 @@ git commit -m "feat: make wakeword module the single source of wake-word matchin
 
 ### Task 8: Wire the GUI and voice loop
 
+> **Post-implementation correction (as actually built):** the plan below was written
+> against an earlier router design that returned `(reply, brain)` and drove a
+> LOCAL/CLOUD indicator in the GUI. That design was benchmarked against the live
+> model and failed (1 of 6 requests needing Gemini actually escalated; the
+> failures invented plausible-but-wrong tool calls with real side effects — a
+> weather question opened YouTube). The project owner ruled **Hermes stays
+> capture-only**, out of the live conversation path entirely. The router's real,
+> shipped interface is `handle(text: str) -> str` — a single string, no tuple, no
+> brain indicator anywhere in the GUI. Steps below reflect what was actually
+> built, not the original brain-indicator design.
+
 **Files:**
-- Modify: `main.py:112-115` (imports), `main.py:186-190` (vault panel), `main.py:272-294` (event loop)
+- Modify: `main.py:115-121` (imports), `main.py:201-206` (vault panel), `main.py:282-297` (new `refresh_vault_panel`/`on_capture` methods), `main.py:299-329` (event loop)
 
 **Interfaces:**
-- Consumes: `router.handle` (Task 6); `capture.enqueue`, `capture.set_listener` (Task 5); `wakeword.detect_wake_word`, `wakeword.strip_wake_word` (Task 7); existing `store.list_memories`.
+- Consumes: `router.handle` (Task 6, real signature `handle(text: str) -> str`); `capture.enqueue(user_text, reply)`, `capture.set_listener(fn)` (Task 5); `wakeword.detect_wake_word`, `wakeword.strip_wake_word` (Task 7); existing `store.list_memories(kind=None, limit=20)`.
 - Produces: nothing consumed by later tasks — this is the final integration.
 
 This task has no unit tests. Mocking Whisper, Kokoro and Tkinter would test the mocks rather than the system, so verification is the manual script in Step 6.
@@ -1933,7 +1944,7 @@ from llm.router import handle as route_request
 from memory import capture, store
 ```
 
-Note `ask_gemini` is no longer imported here — the router owns that call now. `jarvis_tools` is still needed by `build_right_panel`.
+Note `ask_gemini` is no longer imported here — the router owns that call now, and `main.py` does not need its own try/except around `route_request`: `handle()` never raises, it already converts rate-limit and generic failures into speakable strings internally. `jarvis_tools` is still needed by `build_right_panel`.
 
 - [ ] **Step 2: Add the follow-up window constant**
 
@@ -2018,31 +2029,31 @@ In `main.py`, replace the entire `event_loop` method (lines 272-294) with:
                 continue
 
             self.update_status("PRIMARY DIRECTIVE . ACTIVE", "PROCESSING", "#FFA500")
-            try:
-                reply, brain = route_request(request)
-            except Exception as e:
-                self.log_to_console("SYS_ERROR", str(e))
-                speak("I encountered a critical error in my cognitive engine.")
-                continue
+            reply = route_request(request)
 
             self.log_to_console("JARVIS", reply)
-            self.update_status(f"PRIMARY DIRECTIVE . {brain}", "TRANSMITTING", ACCENT_COLOR)
+            self.update_status("PRIMARY DIRECTIVE . ACTIVE", "TRANSMITTING", ACCENT_COLOR)
             speak(reply)
 
             capture.enqueue(request, reply)
             follow_up_until = time.monotonic() + FOLLOW_UP_WINDOW
 ```
 
+No try/except wraps `route_request` here: `router.handle` is documented to never raise (it
+already catches Gemini's rate-limit and generic failures and returns a speakable string), so
+wrapping it again in `main.py` would just be dead defensive code. There is also no `brain`
+variable and no LOCAL/CLOUD text anywhere in `update_status` — the status line's suffix is a
+static `"ACTIVE"`, not a routing indicator.
+
 - [ ] **Step 6: Verify the full suite still passes**
 
-Run: `uv run pytest tests/ -v`
-Expected: 84 passed. (This cumulative figure was already stale by 4 before an earlier fix pass --
-the prior sum of Tasks 1-7's own counts was 74, not the 70 previously stated here. A further +2
-delta carried in from Task 5's post-review fix pass -- see that task's Step 4 -- for a corrected
-total of 76. On top of that, Task 6's scope reduction to a single-brain router (see that task's
-post-implementation note) changed its own test count from 5 to 6 -- a further +1 delta -- for a
-corrected total of 77. A further +7 delta carried in from Task 7's post-review fix pass for the
-"garbage" false-wake bug -- see that task's Step 4 -- for a corrected total of 84.)
+Run: `uv run python -m pytest` (not bare `uv run pytest` — the project's pytest config is wired
+through `python -m pytest`).
+Expected: 87 passed. (Note: the cumulative "Expected: N passed" figures earlier in this document,
+for Tasks 1-7, were reconciled against a 84-test suite as of Task 7's post-review fix pass. Task 8
+added no new tests, but the actual suite observed at this task's completion is 87 — 3 higher than
+84. That gap was not tracked down as part of this task; earlier cumulative figures in this
+document may still be low and should not be trusted without re-running the suite.)
 
 - [ ] **Step 7: Manual end-to-end verification**
 
@@ -2052,25 +2063,39 @@ Start Ollama and Obsidian (with the Local REST API plugin enabled), then:
 uv run main.py
 ```
 
-Walk the spec's acceptance criteria in order and confirm each:
+Walk the spec's acceptance criteria in order and confirm each. Note: there is no LOCAL/CLOUD
+brain indicator to check anywhere below — every reply comes from Gemini via the router, and
+Hermes only runs in the background to extract capture payloads after the reply is spoken.
 
-1. Say **"Jarvis, what do you remember about me?"** → the status line reads `PRIMARY DIRECTIVE . LOCAL` and the console shows a reply.
-2. Stop Ollama (`Get-Process ollama | Stop-Process`), say **"Jarvis, what's on my calendar tomorrow?"** → status reads `PRIMARY DIRECTIVE . CLOUD` and it still answers. Restart Ollama afterwards.
-3. Say **"Jarvis, I'll finish the auth refactor by Tuesday."** Within ~15s of the reply, confirm all of:
-   - a `MEMORY> [commitment] ...` line appears in the console and the DOCUMENTS panel updates
-   - `Journal/2026-08-08.md` in the vault has a new `- HH:MM [commitment] ... [[Auth Refactor]]` line
+1. Say **"Jarvis, what do you remember about me?"** → the console shows a `JARVIS>` reply and the
+   status line reads `PRIMARY DIRECTIVE . ACTIVE / TRANSMITTING` while speaking.
+2. Stop Ollama (`Get-Process ollama | Stop-Process`), say **"Jarvis, what's on my calendar
+   tomorrow?"** → it still answers normally (Gemini is unaffected by Ollama being down; only
+   background capture extraction will fail silently — check the console/logs for
+   `[capture] worker error` but confirm the voice loop itself is undisturbed). Restart Ollama
+   afterwards.
+3. Say **"Jarvis, I'll finish the auth refactor by Tuesday."** Within ~15s of the reply, confirm
+   all of:
+   - a `MEMORY> [commitment] ...` line appears in the console (from `on_capture`'s
+     `self.after(0, lambda: self.log_to_console("MEMORY", ...))`) and the DOCUMENTS panel updates
+     (from `on_capture`'s `self.after(0, self.refresh_vault_panel)`)
+   - `Journal/<today>.md` in the vault has a new `- HH:MM [commitment] ... [[Auth Refactor]]` line
    - `Entities/Auth Refactor.md` exists
-   - `uv run python -c "from memory import store; print(store.list_overdue_tasks(as_of='2026-08-12'))"` lists the task
+   - `uv run python -c "from memory import store; print(store.list_overdue_tasks(as_of='<a few days later>'))"` lists the task
 4. Say **"Jarvis, Ravi is reviewing the auth refactor."** then check the co-occurrence edge exists:
    `uv run python -c "from memory import store; print(store._get_conn().execute('SELECT * FROM relationships').fetchall()[:])"`
    Expected: at least one `mentioned_with` row.
-5. Immediately after a reply, say **"and what about Wednesday?"** with no wake word → it is accepted and answered.
+5. Immediately after a reply, say **"and what about Wednesday?"** with no wake word, within
+   `FOLLOW_UP_WINDOW` (15s) → it is accepted and answered.
+6. Confirm `ENABLE_AUTO_CAPTURE=false` in `.env` cleanly disables capture: `capture.enqueue`
+   returns immediately without queuing anything and no `MEMORY>` lines or vault-panel updates
+   appear, with no error in the console.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add main.py
-git commit -m "feat: route through Hermes, add follow-up window and live vault panel"
+git commit -m "feat: route through Hermes-adjacent router, add follow-up window and live vault panel"
 ```
 
 ---
