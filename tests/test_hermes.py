@@ -84,6 +84,11 @@ def test_capture_key_missing_is_treated_as_no_capture():
     assert hermes.parse_capture('{"kind": "fact", "text": "x"}') is None
 
 
-def test_hermes_tier_holds_exactly_eight_tools():
-    assert len(hermes.HERMES_TOOLS) == 8
-    assert "escalate_to_gemini" in {t.name for t in hermes.HERMES_TOOLS}
+def test_extract_capture_returns_none_when_llm_raises(monkeypatch):
+    class _RaisingLLM:
+        def invoke(self, messages):
+            raise RuntimeError("Ollama unreachable")
+
+    monkeypatch.setattr(hermes, "_get_llm", lambda: _RaisingLLM())
+    result = hermes.extract_capture("some user text", "some reply")
+    assert result is None

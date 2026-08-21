@@ -1,65 +1,32 @@
 # llm/hermes.py
-"""Local Hermes 3 brain, served by Ollama.
+"""Local Hermes 3 brain, served by Ollama -- capture-only.
 
-Hermes handles the common case with a deliberately small tool surface. Small
-models degrade sharply past ~10 bound tools, so HERMES_TOOLS stays at 8. When
-Hermes decides a request is beyond it, it calls escalate_to_gemini and the
-router hands the original text to the full 26-tool Gemini loop.
+This module used to also handle live conversation: Hermes 3 8B bound to 8
+tools, self-escalating to Gemini via an escalate_to_gemini tool when a
+request exceeded its tier. That was benchmarked against the live model and
+failed decisively -- only 1 of 6 requests that needed Gemini actually
+escalated; the rest invented plausible-but-wrong tool calls (e.g. "what's
+the weather in Hyderabad tomorrow" called play_on_youtube and opened
+YouTube for 183 seconds). Prompt tightening did not fix it. The owner's
+decision: all conversation goes to Gemini via llm/gemini.py::ask_gemini.
+Hermes now exists only to power automatic memory capture (extract_capture /
+parse_capture) and local embeddings -- do not restore the conversational
+surface without a new benchmark showing it works.
 """
 import json
 import re
 from datetime import date
 
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
-from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
 
 from config.settings import HERMES_MODEL, OLLAMA_HOST, OLLAMA_NUM_GPU
-from skills.memory_tools import (
-    get_recent_memories, recall_preference, remember_fact, search_memory,
-)
-from skills.system_tools import open_website, play_on_youtube, shutdown_system
 
 CAPTURE_KINDS = {"fact", "commitment", "decision", "idea", "preference"}
 ENTITY_TYPES = {"project", "person", "topic"}
 
-MAX_TOOL_HOPS = 3
 REQUEST_TIMEOUT = 30
 _ISO_DATE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
-
-
-@tool
-def escalate_to_gemini(reason: str) -> str:
-    """Hand this request to the more capable cloud assistant.
-
-    Call this when the request needs multi-step reasoning, the screen, the
-    calendar, GitHub, the weather, the news, project management, or any tool
-    you have not been given. Give a one-line reason."""
-    return f"Escalating: {reason}"
-
-
-HERMES_TOOLS = [
-    search_memory,
-    remember_fact,
-    recall_preference,
-    get_recent_memories,
-    open_website,
-    play_on_youtube,
-    shutdown_system,
-    escalate_to_gemini,
-]
-
-_TOOL_MAP = {t.name: t for t in HERMES_TOOLS}
-
-HERMES_SYSTEM_PROMPT = """You are Jarvis, a local voice assistant. Answer in at most two short
-conversational sentences, as speech, never as markdown.
-
-You have a small set of tools. Use them when they fit the request.
-
-If the request needs anything you do NOT have a tool for -- the user's screen, calendar,
-GitHub, weather, news, projects or tasks, saving a full note, or reasoning that takes
-several steps -- call escalate_to_gemini immediately with a one-line reason. Do not guess
-or apologise; escalating is the correct move, not a failure."""
 
 CAPTURE_PROMPT = """You extract things worth remembering from a conversation.
 
@@ -81,17 +48,15 @@ User: {user_text}
 Jarvis: {reply}"""
 
 _llm = None
-_llm_with_tools = None
 
 
 def _get_llm():
-    global _llm, _llm_with_tools
+    global _llm
     if _llm is None:
         _llm = ChatOllama(model=HERMES_MODEL, base_url=OLLAMA_HOST,
                           temperature=0.4, num_gpu=OLLAMA_NUM_GPU,
                           client_kwargs={"timeout": REQUEST_TIMEOUT})
-        _llm_with_tools = _llm.bind_tools(HERMES_TOOLS)
-    return _llm, _llm_with_tools
+    return _llm
 
 
 def is_available() -> bool:
@@ -153,57 +118,21 @@ def parse_capture(raw: str):
     return {"kind": kind, "text": text.strip(), "entities": entities, "due_date": due_date}
 
 
-def ask_hermes(text: str) -> dict:
-    """Run one Hermes turn. Raises on transport failure so the router can escalate."""
-    _, llm_with_tools = _get_llm()
-    prompt = HERMES_SYSTEM_PROMPT + f"\nToday's date is {date.today().isoformat()}."
-    messages = [SystemMessage(content=prompt), HumanMessage(content=text)]
-
-    final = None
-    for _ in range(MAX_TOOL_HOPS):
-        response = llm_with_tools.invoke(messages)
-        messages.append(response)
-        final = response
-
-        if not response.tool_calls:
-            break
-
-        for call in response.tool_calls:
-            if call["name"] == "escalate_to_gemini":
-                return {"reply": "", "escalate": True,
-                        "reason": call["args"].get("reason", "unspecified")}
-
-            tool_fn = _TOOL_MAP.get(call["name"])
-            if tool_fn is None:
-                result = f"Unknown tool: {call['name']}"
-            else:
-                try:
-                    result = tool_fn.invoke(call["args"])
-                except Exception as e:
-                    result = f"Tool '{call['name']}' failed: {e}"
-            messages.append(ToolMessage(content=str(result), tool_call_id=call["id"]))
-
-            if call["name"] == "shutdown_system":
-                import os
-                print("[*] Terminating V.A.U.L.T. OS...")
-                os._exit(0)
-
-    reply = final.content if final is not None else ""
-    if isinstance(reply, list):
-        reply = " ".join(b.get("text", "") for b in reply if isinstance(b, dict)).strip()
-    reply = str(reply).strip()
-
-    if not reply:
-        return {"reply": "", "escalate": True, "reason": "hermes produced no reply"}
-    return {"reply": reply, "escalate": False, "reason": ""}
-
-
 def extract_capture(user_text: str, reply: str):
-    """Ask Hermes what, if anything, from this exchange is worth keeping."""
-    llm, _ = _get_llm()
+    """Ask Hermes what, if anything, from this exchange is worth keeping.
+
+    Capture runs on a background thread behind the voice loop and must never raise --
+    an unreachable or slow Ollama degrades to "nothing to capture" instead.
+    """
+    llm = _get_llm()
     prompt = CAPTURE_PROMPT.format(today=date.today().isoformat(),
                                    user_text=user_text, reply=reply)
-    response = llm.invoke([HumanMessage(content=prompt)])
+    try:
+        response = llm.invoke([HumanMessage(content=prompt)])
+    except Exception as e:
+        print(f"[hermes] capture extraction failed: {e}")
+        return None
+
     content = response.content
     if isinstance(content, list):
         content = " ".join(b.get("text", "") for b in content if isinstance(b, dict))
