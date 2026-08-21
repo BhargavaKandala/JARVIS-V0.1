@@ -10,6 +10,7 @@ import os
 import re
 import urllib.parse
 from datetime import date, datetime
+from typing import Optional
 
 import requests
 import urllib3
@@ -80,13 +81,26 @@ def put_note(path: str, content: str) -> requests.Response:
     return response
 
 
-def get_note(path: str) -> str:
+def get_note(path: str) -> Optional[str]:
     """Return note contents, or None if absent or unreachable."""
     try:
         response = requests.get(_url(path), headers=HEADERS, verify=False, timeout=TIMEOUT)
     except Exception:
         return None
     return response.text if response.status_code == 200 else None
+
+
+def note_exists(path: str) -> Optional[bool]:
+    """True if the note is confirmed present, False if confirmed absent (404),
+    or None if that could not be determined (timeout, TLS hiccup, any other
+    exception, or a non-200/404 status such as a 5xx). Callers that would
+    otherwise PUT-replace an existing note on an ambiguous read must treat
+    None as "do nothing" -- see ensure_entity_page."""
+    try:
+        r = requests.get(_url(path), headers=HEADERS, verify=False, timeout=TIMEOUT)
+    except Exception:
+        return None
+    return True if r.status_code == 200 else (False if r.status_code == 404 else None)
 
 
 def append_daily_note(line: str, when: date = None) -> bool:
@@ -98,9 +112,11 @@ def append_daily_note(line: str, when: date = None) -> bool:
 
 
 def ensure_entity_page(name: str, type_: str) -> bool:
-    """Create Entities/<Name>.md if it does not already exist. No-op if present."""
+    """Create Entities/<Name>.md if it does not already exist. No-op if present
+    -- and no-op (never destructive) when presence can't be determined, since
+    a PUT here replaces the file wholesale. Only a confirmed 404 may create it."""
     path = entity_note_path(name)
-    if get_note(path) is not None:
+    if note_exists(path) is not False:
         return True
     safe = sanitize_entity_name(name)
     content = (

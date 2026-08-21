@@ -136,3 +136,63 @@ def test_ensure_entity_page_is_a_noop_when_the_page_already_exists():
         assert result is True
         mock_put.assert_not_called()
         mock_post.assert_not_called()
+
+
+# --- note_exists / ensure_entity_page ambiguity handling --------------------
+#
+# get_note() collapses "confirmed absent" and "could not determine" into the
+# same None, which made ensure_entity_page PUT-replace an existing note on a
+# mere timeout. note_exists() keeps those two outcomes distinct (True/False/
+# None), and ensure_entity_page must only ever create on a confirmed False.
+
+def test_note_exists_true_on_200():
+    with patch("memory.vault.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(200, "content")
+        assert vault.note_exists("Entities/Ravi.md") is True
+
+
+def test_note_exists_false_on_404():
+    with patch("memory.vault.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(404)
+        assert vault.note_exists("Entities/Ravi.md") is False
+
+
+def test_note_exists_none_on_exception():
+    with patch("memory.vault.requests.get") as mock_get:
+        mock_get.side_effect = TimeoutError("connection timed out")
+        assert vault.note_exists("Entities/Ravi.md") is None
+
+
+def test_note_exists_none_on_server_error():
+    with patch("memory.vault.requests.get") as mock_get:
+        mock_get.return_value = _mock_response(500, "Internal Server Error")
+        assert vault.note_exists("Entities/Ravi.md") is None
+
+
+def test_ensure_entity_page_does_not_put_on_timeout():
+    """The critical regression case: a GET that merely times out against an
+    existing page must NOT be treated as absent -- doing so would PUT-replace
+    a note the user has been writing in with the 5-line stub."""
+    with patch("memory.vault.requests.get") as mock_get, \
+         patch("memory.vault.requests.put") as mock_put, \
+         patch("memory.vault.requests.post") as mock_post:
+        mock_get.side_effect = TimeoutError("connection timed out")
+
+        result = vault.ensure_entity_page("Ravi", "person")
+
+        assert result is True
+        mock_put.assert_not_called()
+        mock_post.assert_not_called()
+
+
+def test_ensure_entity_page_does_not_put_on_server_error():
+    with patch("memory.vault.requests.get") as mock_get, \
+         patch("memory.vault.requests.put") as mock_put, \
+         patch("memory.vault.requests.post") as mock_post:
+        mock_get.return_value = _mock_response(500, "Internal Server Error")
+
+        result = vault.ensure_entity_page("Ravi", "person")
+
+        assert result is True
+        mock_put.assert_not_called()
+        mock_post.assert_not_called()
