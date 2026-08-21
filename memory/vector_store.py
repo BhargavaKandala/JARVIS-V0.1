@@ -1,10 +1,10 @@
 import numpy as np
 from datetime import datetime
-from langchain_google_genai import GoogleGenerativeAIEmbeddings
-from config.settings import GOOGLE_API_KEY
+from langchain_ollama import OllamaEmbeddings
+from config.settings import EMBED_MODEL, OLLAMA_HOST
 from memory import store
 
-EMBEDDING_MODEL = "models/gemini-embedding-001"
+EMBEDDING_MODEL = EMBED_MODEL
 
 _embedder = None
 
@@ -12,7 +12,7 @@ _embedder = None
 def _get_embedder():
     global _embedder
     if _embedder is None:
-        _embedder = GoogleGenerativeAIEmbeddings(model=EMBEDDING_MODEL, google_api_key=GOOGLE_API_KEY)
+        _embedder = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_HOST)
     return _embedder
 
 
@@ -36,7 +36,8 @@ def index_memory(memory_id: int, text: str) -> None:
 def search(query: str, top_k: int = 5, kind: str = None) -> list:
     conn = store._get_conn()
     rows = conn.execute(
-        "SELECT e.memory_id, e.vector, e.dim FROM embeddings e"
+        "SELECT e.memory_id, e.vector, e.dim FROM embeddings e WHERE e.model = ?",
+        (EMBEDDING_MODEL,),
     ).fetchall()
     if not rows:
         return []
