@@ -170,8 +170,11 @@ def test_reindex_full_success_purges_all_stale_rows(temp_db, monkeypatch, capsys
     ).fetchone()
     assert row["model"] == vector_store.EMBEDDING_MODEL
 
+    count = conn.execute("SELECT COUNT(*) AS n FROM embeddings").fetchone()["n"]
+    assert count == 1  # no leftover old-model row for this memory
+
     out = capsys.readouterr().out
-    assert "1 re-embedded, 0 failed, stale rows purged" in out
+    assert "1 re-embedded, 0 failed" in out
     assert "FAILURE" not in out
 
 

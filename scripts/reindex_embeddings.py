@@ -45,9 +45,13 @@ def main():
 
     done = len(succeeded_ids)
 
-    # Only purge stale (non-active-model) rows for memories this run actually
-    # replaced. Memories that failed to re-embed keep whatever embedding they
-    # had before -- including a total-failure run, which purges nothing.
+    # index_memory() upserts on memory_id, so a memory that was successfully
+    # re-embedded already carries the active model on its one and only
+    # embeddings row -- this DELETE is a defensive no-op for those rows, not
+    # the mechanism that updates them. What it actually protects is memories
+    # that FAILED to re-embed: because the scope is succeeded_ids only, their
+    # still-stale-model row is never touched, on a partial *or* total
+    # failure (succeeded_ids is empty on total failure, so nothing runs).
     if succeeded_ids:
         placeholders = ", ".join("?" for _ in succeeded_ids)
         conn.execute(
@@ -65,16 +69,14 @@ def main():
         )
     elif failed:
         print(
-            f"[!] PARTIAL FAILURE: {done} re-embedded, {failed} failed. Stale "
-            f"rows were purged ONLY for the {done} memories that were "
-            f"successfully re-embedded this run. The {failed} memories that "
-            "failed still have their OLD embedding in place (not purged, "
-            "not replaced -- semantic search for those rows may be stale or "
-            "absent). Fix the embedder and re-run this script to finish the "
-            "job; it is safe to re-run."
+            f"[!] PARTIAL FAILURE: {done} re-embedded, {failed} failed. The "
+            f"{failed} memories that failed still have their OLD (pre-"
+            "migration) embedding in place -- not purged, not replaced. "
+            "Fix the embedder and re-run this script to finish the job; it "
+            "is safe to re-run."
         )
     else:
-        print(f"[*] Done. {done} re-embedded, 0 failed, stale rows purged.")
+        print(f"[*] Done. {done} re-embedded, 0 failed. No stale-model embeddings remain.")
 
 
 if __name__ == "__main__":
