@@ -1,7 +1,7 @@
 import numpy as np
 from datetime import datetime
 from langchain_ollama import OllamaEmbeddings
-from config.settings import EMBED_MODEL, OLLAMA_HOST
+from config.settings import EMBED_MODEL, OLLAMA_HOST, OLLAMA_NUM_GPU
 from memory import store
 
 EMBEDDING_MODEL = EMBED_MODEL
@@ -12,7 +12,7 @@ _embedder = None
 def _get_embedder():
     global _embedder
     if _embedder is None:
-        _embedder = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_HOST)
+        _embedder = OllamaEmbeddings(model=EMBEDDING_MODEL, base_url=OLLAMA_HOST, num_gpu=OLLAMA_NUM_GPU)
     return _embedder
 
 

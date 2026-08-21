@@ -15,6 +15,10 @@ OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
 HERMES_MODEL = os.getenv("HERMES_MODEL", "hermes3:8b")
 EMBED_MODEL = os.getenv("EMBED_MODEL", "nomic-embed-text")
 ENABLE_AUTO_CAPTURE = os.getenv("ENABLE_AUTO_CAPTURE", "true").lower() == "true"
+# 0 forces CPU-only inference. This machine's installed CUDA build is incompatible with
+# the local Ollama runtime (GPU offload crashes with "CUDA error: device kernel image is
+# invalid"), so every Ollama client in this codebase must pass num_gpu=0.
+OLLAMA_NUM_GPU = int(os.getenv("OLLAMA_NUM_GPU", "0"))
 
 _CONFIG_DIR = os.path.dirname(__file__)
 _DATA_DIR = os.path.join(_CONFIG_DIR, "..", "data")

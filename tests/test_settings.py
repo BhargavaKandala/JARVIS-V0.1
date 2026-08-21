@@ -9,3 +9,7 @@ def test_ollama_defaults_present():
 
 def test_auto_capture_defaults_on():
     assert settings.ENABLE_AUTO_CAPTURE is True
+
+
+def test_ollama_num_gpu_defaults_to_zero():
+    assert settings.OLLAMA_NUM_GPU == 0
