@@ -63,15 +63,6 @@ def _get_llm():
     return _llm
 
 
-def is_available() -> bool:
-    """True if the Ollama server answers. Used to skip Hermes without raising."""
-    import requests
-    try:
-        return requests.get(f"{OLLAMA_HOST}/api/tags", timeout=2).status_code == 200
-    except Exception:
-        return False
-
-
 def parse_capture(raw: str, today: date = None):
     """Normalize one capture payload from Hermes. Returns None if there is nothing to store.
 
