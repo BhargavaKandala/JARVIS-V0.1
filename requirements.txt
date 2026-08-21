@@ -49,6 +49,7 @@ click==8.4.1
 colorama==0.4.6
     # via
     #   click
+    #   pytest
     #   tqdm
 comtypes==1.4.16
     # via pyttsx3
@@ -123,6 +124,7 @@ httpx==0.28.1
     #   huggingface-hub
     #   langgraph-sdk
     #   langsmith
+    #   ollama
 huggingface-hub==1.20.1
     # via
     #   faster-whisper
@@ -133,6 +135,8 @@ idna==3.18
     #   httpx
     #   requests
     #   yarl
+iniconfig==2.3.0
+    # via pytest
 isodate==0.7.2
     # via csvw
 itsdangerous==2.2.0
@@ -157,11 +161,14 @@ langchain-core==1.4.8
     # via
     #   langchain
     #   langchain-google-genai
+    #   langchain-ollama
     #   langgraph
     #   langgraph-checkpoint
     #   langgraph-prebuilt
     #   langgraph-sdk
 langchain-google-genai==4.2.5
+    # via jarvis-v0-1 (pyproject.toml)
+langchain-ollama==1.1.0
     # via jarvis-v0-1 (pyproject.toml)
 langchain-protocol==0.0.18
     # via
@@ -206,6 +213,8 @@ numpy==2.4.6
     #   soundfile
 oauthlib==3.3.1
     # via requests-oauthlib
+ollama==0.6.2
+    # via langchain-ollama
 onnxruntime==1.27.0
     # via
     #   faster-whisper
@@ -224,12 +233,15 @@ packaging==26.2
     #   langsmith
     #   onnxruntime
     #   pytesseract
+    #   pytest
 phonemizer-fork==3.3.2
     # via kokoro-onnx
 pillow==12.2.0
     # via
     #   pytesseract
     #   pywhatkit
+pluggy==1.6.0
+    # via pytest
 propcache==0.5.2
     # via
     #   aiohttp
@@ -260,6 +272,7 @@ pydantic==2.13.4
     #   langchain-google-genai
     #   langgraph
     #   langsmith
+    #   ollama
 pydantic-core==2.46.4
     # via pydantic
 pygame==2.6.1
@@ -267,7 +280,9 @@ pygame==2.6.1
 pygetwindow==0.0.9
     # via pyautogui
 pygments==2.20.0
-    # via rich
+    # via
+    #   pytest
+    #   rich
 pymsgbox==2.0.1
     # via pyautogui
 pyparsing==3.3.2
@@ -283,6 +298,8 @@ pyrect==0.2.0
 pyscreeze==1.0.1
     # via pyautogui
 pytesseract==0.3.13
+    # via jarvis-v0-1 (pyproject.toml)
+pytest==9.1.1
     # via jarvis-v0-1 (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via csvw
