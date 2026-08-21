@@ -11,3 +11,7 @@ venv/
 # Local AI Models
 *.onnx
 *.bin
+
+# Local structured memory + calendar auth
+data/
+config/google_calendar_credentials.json

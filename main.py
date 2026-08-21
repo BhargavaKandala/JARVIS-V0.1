@@ -115,7 +115,10 @@ import customtkinter as ctk
 # Import your rock-solid Fable OS backend
 from voice.listener import listen
 from voice.speaker import speak
-from llm.gemini import ask_gemini, jarvis_tools
+from voice.wakeword import detect_wake_word, strip_wake_word
+from llm.gemini import jarvis_tools
+from llm.router import handle as route_request
+from memory import capture, store
 
 # --- GUI THEME SETUP ---
 ctk.set_appearance_mode("dark")
@@ -129,6 +132,9 @@ ALERT_COLOR = "#FF0055"
 FONT_MAIN = ("Courier New", 12)
 FONT_HEADER = ("Courier New", 14, "bold")
 FONT_TITLE = ("Courier New", 24, "bold")
+
+# Seconds after a reply during which speech is accepted without the wake word.
+FOLLOW_UP_WINDOW = 15
 
 class VaultCommandCenter(ctk.CTk):
     def __init__(self):
@@ -174,7 +180,9 @@ class VaultCommandCenter(ctk.CTk):
         # --- THREADING & ANIMATION ---
         self.ai_active = True
         self.animate_orb()
-        
+
+        capture.set_listener(self.on_capture)
+
         self.ai_thread = threading.Thread(target=self.event_loop, daemon=True)
         self.ai_thread.start()
 
@@ -192,8 +200,10 @@ class VaultCommandCenter(ctk.CTk):
 
         # Documents (Obsidian Vault Preview)
         ctk.CTkLabel(self.left_panel, text="DOCUMENTS (VAULT)", font=FONT_HEADER, text_color=TEXT_COLOR).pack(anchor="w", pady=(30, 5), padx=10)
-        self.docs_list = ctk.CTkLabel(self.left_panel, text="Master Plan.md\nProject Alpha.md\n", font=FONT_MAIN, text_color="#555555", justify="left")
+        self.docs_list = ctk.CTkLabel(self.left_panel, text="(empty)", font=FONT_MAIN,
+                                      text_color="#555555", justify="left")
         self.docs_list.pack(anchor="w", padx=10)
+        self.refresh_vault_panel()
 
     def build_center_panel(self):
         # 2D Canvas to simulate the 3D Node Sphere
@@ -255,43 +265,91 @@ class VaultCommandCenter(ctk.CTk):
         self.after(30, self.animate_orb)
 
     def log_to_console(self, speaker, message):
-        self.console.configure(state="normal")
-        color = ACCENT_COLOR if speaker == "JARVIS" else "#FFFFFF"
-        if speaker == "SYS_ERROR": color = ALERT_COLOR
-        
-        # Insert tag, then message
-        self.console.insert("end", f"{speaker}> ")
-        self.console.insert("end", f"{message}\n\n")
-        self.console.see("end")
-        self.console.configure(state="disabled")
+        """Safe to call from any thread: Tkinter widgets may only be touched
+        from the main thread, so the actual mutation is marshalled onto the
+        Tk event loop via self.after(0, ...). Do not remove the indirection."""
+        def _do(speaker=speaker, message=message):
+            self.console.configure(state="normal")
+            color = ACCENT_COLOR if speaker == "JARVIS" else "#FFFFFF"
+            if speaker == "SYS_ERROR": color = ALERT_COLOR
+
+            # Insert tag, then message
+            self.console.insert("end", f"{speaker}> ")
+            self.console.insert("end", f"{message}\n\n")
+            self.console.see("end")
+            self.console.configure(state="disabled")
+        self.after(0, _do)
 
     def update_status(self, sub_text, main_text, color):
-        self.core_status_label.configure(text=sub_text)
-        self.main_state_label.configure(text=main_text, text_color=color)
+        """Safe to call from any thread: Tkinter widgets may only be touched
+        from the main thread, so the actual mutation is marshalled onto the
+        Tk event loop via self.after(0, ...). Do not remove the indirection."""
+        def _do(sub_text=sub_text, main_text=main_text, color=color):
+            self.core_status_label.configure(text=sub_text)
+            self.main_state_label.configure(text=main_text, text_color=color)
+        self.after(0, _do)
+
+    def refresh_vault_panel(self):
+        """Show the most recent captures. Safe to call from any thread: the
+        widget mutation is marshalled onto the Tk event loop via
+        self.after(0, ...). Do not remove the indirection."""
+        try:
+            memories = store.list_memories(limit=5)
+        except Exception:
+            return
+        if not memories:
+            self.after(0, lambda: self.docs_list.configure(text="(empty)"))
+            return
+        lines = [f"{m['kind']}: {m['content'][:34]}" for m in memories]
+        text = "\n".join(lines)
+        self.after(0, lambda text=text: self.docs_list.configure(text=text))
+
+    def on_capture(self, payload):
+        """Capture-thread callback. refresh_vault_panel and log_to_console are
+        self-marshalling, so they can be called directly here."""
+        self.refresh_vault_panel()
+        self.log_to_console("MEMORY", f"[{payload['kind']}] {payload['text']}")
 
     def event_loop(self):
         time.sleep(2)
-        
-        while self.ai_active:
-            self.update_status("PRIMARY DIRECTIVE . IDLE", "AWAITING AUDIO", TEXT_COLOR)
-            
-            text = listen()
+        follow_up_until = 0.0
 
-            if text:
+        while self.ai_active:
+            try:
+                self.update_status("PRIMARY DIRECTIVE . IDLE", "AWAITING AUDIO", TEXT_COLOR)
+
+                text = listen()
+                if not text:
+                    continue
+
                 self.log_to_console("USER", text)
 
-                if any(word in text.lower() for word in ["jarvis", "jaress", "travis", "garbage"]):
-                    self.update_status("PRIMARY DIRECTIVE . ACTIVE", "PROCESSING", "#FFA500") # Orange
-                    try:
-                        response = ask_gemini(text)
-                        self.log_to_console("JARVIS", response)
-                        
-                        self.update_status("PRIMARY DIRECTIVE . ACTIVE", "TRANSMITTING", ACCENT_COLOR) # Teal
-                        speak(response)
-                        
-                    except Exception as e:
-                        self.log_to_console("SYS_ERROR", str(e))
-                        speak("I encountered a critical error in my cognitive engine.")
+                in_follow_up = time.monotonic() < follow_up_until
+                if not (detect_wake_word(text) or in_follow_up):
+                    continue
+
+                request = strip_wake_word(text) if detect_wake_word(text) else text
+                if not request:
+                    continue
+
+                self.update_status("PRIMARY DIRECTIVE . ACTIVE", "PROCESSING", "#FFA500")  # Orange
+                reply = route_request(request)
+
+                self.log_to_console("JARVIS", reply)
+                self.update_status("PRIMARY DIRECTIVE . ACTIVE", "TRANSMITTING", ACCENT_COLOR)  # Teal
+                speak(reply)
+
+                capture.enqueue(request, reply)
+                follow_up_until = time.monotonic() + FOLLOW_UP_WINDOW
+            except Exception as e:
+                # listen() raises OSError when the mic is grabbed by another app or
+                # unplugged; transcription/tempfile writes can raise too. Without this
+                # guard any of those kills the loop thread permanently (the orb keeps
+                # animating, the status is stuck, and Jarvis goes silently deaf for the
+                # rest of the session). Surface it and back off so a permanently-missing
+                # microphone can't hot-spin the thread.
+                self.log_to_console("SYS_ERROR", str(e))
+                time.sleep(1)
 
 if __name__ == "__main__":
     app = VaultCommandCenter()
