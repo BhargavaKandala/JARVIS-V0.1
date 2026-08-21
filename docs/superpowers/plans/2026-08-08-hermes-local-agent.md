@@ -857,6 +857,25 @@ git commit -m "feat: move embeddings to local nomic-embed-text with reindex migr
 > (`extract_capture`/`parse_capture`) and local embeddings. The steps below reflect what was
 > actually shipped, not the original 8-tool-tier design.
 
+> **Post-implementation note (2026-08-22): relative-date benchmark and the past-date guard.**
+> `due_date` extraction was benchmarked against the live model with today fixed at Saturday
+> 2026-08-22. The original prompt (just `Today is {today}.`) scored 2/5 on relative-date
+> phrases: "finish the auth refactor by next Tuesday" resolved to 2026-08-30 (a **Sunday**;
+> correct is 2026-08-25), "the grant deadline is this Friday" resolved to 2026-08-26 (a
+> **Wednesday**; correct is 2026-08-28), and "ship the release next Monday" resolved to
+> 2026-08-28 (a **Friday**; correct is 2026-08-24). Adding the weekday name of today plus a
+> no-past-dates instruction to the prompt (see the `due_date` bullet below) improved this to
+> 3/5 — but one case still returned 2026-08-21, a date **in the past**, despite the explicit
+> instruction. Prompting alone is not sufficient to prevent a past date from reaching
+> `store.add_task(due_date=...)`, which drives the overdue-commitment reminders — a wrong-past
+> date there fires a reminder the instant it is written. `parse_capture` now takes this
+> deterministically out of the model's hands: any `due_date` that parses as ISO but falls
+> before `today` (an optional parameter, defaulting to the real date, so this is unit-testable
+> without depending on the system clock) is dropped to `None` rather than trusted. A `None`
+> due date is strictly better than a wrong past one — the residual inaccuracy on phrases like
+> "next Monday" landing on the wrong *future* day is accepted and out of scope; this guard
+> only closes the past-date failure mode, it is not a date parser.
+
 **Files:**
 - Create: `llm/hermes.py`
 - Create: `tests/test_hermes.py`
@@ -864,7 +883,7 @@ git commit -m "feat: move embeddings to local nomic-embed-text with reindex migr
 **Interfaces:**
 - Consumes: `config.settings.HERMES_MODEL`, `OLLAMA_HOST`, `OLLAMA_NUM_GPU` (Task 1).
 - Produces:
-  - `hermes.parse_capture(raw: str) -> dict | None` — pure, normalizes and validates one JSON payload
+  - `hermes.parse_capture(raw: str, today: date = None) -> dict | None` — pure, normalizes and validates one JSON payload; `today` defaults to the real date and exists so the past-due-date guard is unit-testable without depending on the system clock
   - `hermes.extract_capture(user_text: str, reply: str) -> dict | None` — never raises; degrades to `None` if the underlying LLM call fails
   - `hermes.is_available() -> bool`
   - `hermes.CAPTURE_KINDS: set[str]`
@@ -876,13 +895,17 @@ git commit -m "feat: move embeddings to local nomic-embed-text with reindex migr
 `parse_capture` is the one piece of Hermes handling worth heavy testing — it is pure, and it is where a small model's sloppiness actually lands. Create `tests/test_hermes.py`:
 
 ```python
+from datetime import date
+
 from llm import hermes
 
 
 def test_parses_a_well_formed_payload():
     raw = ('{"capture": true, "kind": "commitment", "text": "Finish auth by Tuesday", '
            '"entities": [{"name": "Auth Refactor", "type": "project"}], "due_date": "2026-08-11"}')
-    result = hermes.parse_capture(raw)
+    # Fixed `today` earlier than the payload's due_date, so this test doesn't depend on
+    # (and can't be broken by) the real system clock ever passing 2026-08-11.
+    result = hermes.parse_capture(raw, today=date(2026, 8, 1))
     assert result["kind"] == "commitment"
     assert result["text"] == "Finish auth by Tuesday"
     assert result["entities"] == [{"name": "Auth Refactor", "type": "project"}]
@@ -970,6 +993,52 @@ def test_extract_capture_returns_none_when_llm_raises(monkeypatch):
     monkeypatch.setattr(hermes, "_get_llm", lambda: _RaisingLLM())
     result = hermes.extract_capture("some user text", "some reply")
     assert result is None
+
+
+def test_past_due_date_is_dropped_but_rest_of_payload_survives():
+    raw = ('{"capture": true, "kind": "commitment", "text": "Finish the auth refactor", '
+           '"entities": [{"name": "Auth Refactor", "type": "project"}], "due_date": "2026-08-01"}')
+    result = hermes.parse_capture(raw, today=date(2026, 8, 22))
+    assert result["due_date"] is None
+    assert result["kind"] == "commitment"
+    assert result["text"] == "Finish the auth refactor"
+    assert result["entities"] == [{"name": "Auth Refactor", "type": "project"}]
+
+
+def test_due_date_equal_to_today_is_kept():
+    raw = '{"capture": true, "kind": "commitment", "text": "x", "due_date": "2026-08-22"}'
+    result = hermes.parse_capture(raw, today=date(2026, 8, 22))
+    assert result["due_date"] == "2026-08-22"
+
+
+def test_future_due_date_is_kept():
+    raw = '{"capture": true, "kind": "commitment", "text": "x", "due_date": "2026-08-23"}'
+    result = hermes.parse_capture(raw, today=date(2026, 8, 22))
+    assert result["due_date"] == "2026-08-23"
+
+
+def test_extract_capture_prompt_includes_todays_weekday(monkeypatch):
+    """Guards the {{/}} escaping in CAPTURE_PROMPT: if the new format keys broke it,
+    CAPTURE_PROMPT.format(...) would raise before the LLM is ever invoked."""
+    captured = {}
+
+    class _FakeResponse:
+        content = '{"capture": false}'
+
+    class _FakeLLM:
+        def invoke(self, messages):
+            captured["prompt"] = messages[0].content
+            return _FakeResponse()
+
+    monkeypatch.setattr(hermes, "_get_llm", lambda: _FakeLLM())
+
+    result = hermes.extract_capture("some user text", "some reply")
+
+    assert result is None
+    today_weekday = date.today().strftime("%A")
+    assert today_weekday in captured["prompt"]
+    assert "some user text" in captured["prompt"]
+    assert "some reply" in captured["prompt"]
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -999,7 +1068,7 @@ surface without a new benchmark showing it works.
 """
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
@@ -1025,7 +1094,11 @@ Reply with ONE JSON object and nothing else. No prose, no code fences.
 - text: one self-contained sentence, written in the third person about the user.
 - entities: people, projects or topics named. type is one of project, person, topic.
   Use [] if none.
-- due_date: ISO YYYY-MM-DD if a deadline was stated, else null. Today is {today}.
+- due_date: ISO YYYY-MM-DD if a deadline was stated, else null. Today is {today}, a
+  {today_weekday}. Work out any relative date ("next Tuesday", "this Friday", "tomorrow")
+  as an offset from {today} ({today_weekday}), never from any other day. For reference,
+  tomorrow is {tomorrow} ({tomorrow_weekday}). A due_date before {today} is never correct --
+  if you cannot work out a date on or after {today}, use null instead of guessing.
 
 Conversation:
 User: {user_text}
@@ -1052,12 +1125,15 @@ def is_available() -> bool:
         return False
 
 
-def parse_capture(raw: str):
+def parse_capture(raw: str, today: date = None):
     """Normalize one capture payload from Hermes. Returns None if there is nothing to store.
 
     Small models wrap JSON in prose or fences, emit bare strings where objects were asked
     for, and invent kinds. Every one of those is normalized or rejected here rather than
     downstream.
+
+    `today` defaults to the real system date; pass an explicit `date` in tests so the
+    past-due-date check below is deterministic instead of depending on the clock.
     """
     if not raw:
         return None
@@ -1096,7 +1172,15 @@ def parse_capture(raw: str):
         })
 
     due_date = payload.get("due_date")
-    if not (isinstance(due_date, str) and _ISO_DATE.match(due_date)):
+    if isinstance(due_date, str) and _ISO_DATE.match(due_date):
+        # A commitment with no due date is strictly better than one carrying a wrong past
+        # date: a past date fires an overdue reminder the instant it's written, while a
+        # missing date just waits for a future correction. ISO YYYY-MM-DD strings compare
+        # correctly as plain strings (fixed-width, zero-padded), so no date parsing -- and
+        # no exception handling -- is needed to make this comparison.
+        if due_date < (today or date.today()).isoformat():
+            due_date = None
+    else:
         due_date = None
 
     return {"kind": kind, "text": text.strip(), "entities": entities, "due_date": due_date}
@@ -1109,8 +1193,12 @@ def extract_capture(user_text: str, reply: str):
     an unreachable or slow Ollama degrades to "nothing to capture" instead.
     """
     llm = _get_llm()
-    prompt = CAPTURE_PROMPT.format(today=date.today().isoformat(),
-                                   user_text=user_text, reply=reply)
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    prompt = CAPTURE_PROMPT.format(
+        today=today.isoformat(), today_weekday=today.strftime("%A"),
+        tomorrow=tomorrow.isoformat(), tomorrow_weekday=tomorrow.strftime("%A"),
+        user_text=user_text, reply=reply)
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
     except Exception as e:
@@ -1126,9 +1214,12 @@ def extract_capture(user_text: str, reply: str):
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_hermes.py -v`
-Expected: 16 passed. (15 `parse_capture` tests, unchanged, plus the new `extract_capture`-never-raises
-test replacing the deleted 8-tool-tier test -- the count holds at 16, so no delta propagates to the
-cumulative counts in later tasks.)
+Expected: 20 passed. (The original 16 -- 15 `parse_capture` tests plus the `extract_capture`-never-
+raises test -- plus 4 added in a post-review fix pass for the past-due-date guard: a past `due_date`
+dropped to `None` with the rest of the payload intact, a `due_date` equal to today kept, a future
+`due_date` kept, and a prompt-formatting regression test that guards the `{{`/`}}` escaping now that
+`CAPTURE_PROMPT` takes two new format keys. A +4 delta that propagates to the cumulative count in
+Task 5.)
 
 - [ ] **Step 5: Smoke-test Hermes against the live model**
 
@@ -1444,7 +1535,7 @@ Expected: 14 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `uv run pytest tests/ -v`
-Expected: 57 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`, a +6 delta; Task 3's own count grew from 5 to 9 after a review-driven fix pass to `scripts/reindex_embeddings.py`, a further +4 delta; every cumulative count below carries both.)
+Expected: 61 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`, a +6 delta; Task 3's own count grew from 5 to 9 after a review-driven fix pass to `scripts/reindex_embeddings.py`, a further +4 delta; Task 4's own count grew from 16 to 20 after adding the past-due-date guard and its tests, a further +4 delta; every cumulative count below carries all three.)
 
 - [ ] **Step 6: Commit**
 

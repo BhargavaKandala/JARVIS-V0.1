@@ -15,7 +15,7 @@ surface without a new benchmark showing it works.
 """
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 
 from langchain_core.messages import HumanMessage
 from langchain_ollama import ChatOllama
@@ -41,7 +41,11 @@ Reply with ONE JSON object and nothing else. No prose, no code fences.
 - text: one self-contained sentence, written in the third person about the user.
 - entities: people, projects or topics named. type is one of project, person, topic.
   Use [] if none.
-- due_date: ISO YYYY-MM-DD if a deadline was stated, else null. Today is {today}.
+- due_date: ISO YYYY-MM-DD if a deadline was stated, else null. Today is {today}, a
+  {today_weekday}. Work out any relative date ("next Tuesday", "this Friday", "tomorrow")
+  as an offset from {today} ({today_weekday}), never from any other day. For reference,
+  tomorrow is {tomorrow} ({tomorrow_weekday}). A due_date before {today} is never correct --
+  if you cannot work out a date on or after {today}, use null instead of guessing.
 
 Conversation:
 User: {user_text}
@@ -68,12 +72,15 @@ def is_available() -> bool:
         return False
 
 
-def parse_capture(raw: str):
+def parse_capture(raw: str, today: date = None):
     """Normalize one capture payload from Hermes. Returns None if there is nothing to store.
 
     Small models wrap JSON in prose or fences, emit bare strings where objects were asked
     for, and invent kinds. Every one of those is normalized or rejected here rather than
     downstream.
+
+    `today` defaults to the real system date; pass an explicit `date` in tests so the
+    past-due-date check below is deterministic instead of depending on the clock.
     """
     if not raw:
         return None
@@ -112,7 +119,15 @@ def parse_capture(raw: str):
         })
 
     due_date = payload.get("due_date")
-    if not (isinstance(due_date, str) and _ISO_DATE.match(due_date)):
+    if isinstance(due_date, str) and _ISO_DATE.match(due_date):
+        # A commitment with no due date is strictly better than one carrying a wrong past
+        # date: a past date fires an overdue reminder the instant it's written, while a
+        # missing date just waits for a future correction. ISO YYYY-MM-DD strings compare
+        # correctly as plain strings (fixed-width, zero-padded), so no date parsing -- and
+        # no exception handling -- is needed to make this comparison.
+        if due_date < (today or date.today()).isoformat():
+            due_date = None
+    else:
         due_date = None
 
     return {"kind": kind, "text": text.strip(), "entities": entities, "due_date": due_date}
@@ -125,8 +140,12 @@ def extract_capture(user_text: str, reply: str):
     an unreachable or slow Ollama degrades to "nothing to capture" instead.
     """
     llm = _get_llm()
-    prompt = CAPTURE_PROMPT.format(today=date.today().isoformat(),
-                                   user_text=user_text, reply=reply)
+    today = date.today()
+    tomorrow = today + timedelta(days=1)
+    prompt = CAPTURE_PROMPT.format(
+        today=today.isoformat(), today_weekday=today.strftime("%A"),
+        tomorrow=tomorrow.isoformat(), tomorrow_weekday=tomorrow.strftime("%A"),
+        user_text=user_text, reply=reply)
     try:
         response = llm.invoke([HumanMessage(content=prompt)])
     except Exception as e:
