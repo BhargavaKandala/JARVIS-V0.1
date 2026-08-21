@@ -201,6 +201,28 @@ def test_duplicate_entity_in_payload_creates_no_self_relationship(temp_db):
         "SELECT COUNT(*) c FROM entities WHERE name = 'Ravi'").fetchone()["c"] == 1
 
 
+def test_falsy_daily_note_return_is_reported(temp_db, monkeypatch, capsys):
+    """A vault answering 4xx/5xx (returning False, not raising) for the daily
+    note append must be distinguishable from success -- otherwise capture
+    looks like it worked while silently writing nothing. Overrides the
+    autouse no_vault_writes fixture for this one call only."""
+    monkeypatch.setattr(capture.vault, "append_daily_note", lambda *a, **k: False)
+
+    memory_id = capture.persist_capture(_payload(), "src")
+
+    assert memory_id is not None  # the memory row itself still succeeds
+    assert "daily note" in capsys.readouterr().out
+
+
+def test_falsy_entity_page_return_is_reported(temp_db, monkeypatch, capsys):
+    monkeypatch.setattr(capture.vault, "ensure_entity_page", lambda *a, **k: False)
+
+    capture.persist_capture(
+        _payload(entities=[{"name": "Ravi", "type": "person"}]), "src")
+
+    assert "entity page" in capsys.readouterr().out
+
+
 def test_worker_survives_extract_capture_raising(temp_db, monkeypatch):
     """One exchange raising inside the worker must not stop later exchanges from
     being captured -- the daemon thread must never die."""

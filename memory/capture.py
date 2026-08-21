@@ -91,13 +91,15 @@ def persist_capture(payload: dict, source_text: str):
     try:
         line = vault.format_capture_line(payload["kind"], payload["text"],
                                          [e["name"] for e in entities])
-        vault.append_daily_note(line)
+        if not vault.append_daily_note(line):
+            print("[capture] daily note write returned failure")
     except Exception as e:
         print(f"[capture] daily note failed: {e}")
 
     for entity in entities:
         try:
-            vault.ensure_entity_page(entity["name"], entity["type"])
+            if not vault.ensure_entity_page(entity["name"], entity["type"]):
+                print(f"[capture] entity page '{entity.get('name')}' write returned failure")
         except Exception as e:
             print(f"[capture] entity page '{entity.get('name')}' failed: {e}")
 
