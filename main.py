@@ -315,31 +315,41 @@ class VaultCommandCenter(ctk.CTk):
         follow_up_until = 0.0
 
         while self.ai_active:
-            self.update_status("PRIMARY DIRECTIVE . IDLE", "AWAITING AUDIO", TEXT_COLOR)
+            try:
+                self.update_status("PRIMARY DIRECTIVE . IDLE", "AWAITING AUDIO", TEXT_COLOR)
 
-            text = listen()
-            if not text:
-                continue
+                text = listen()
+                if not text:
+                    continue
 
-            self.log_to_console("USER", text)
+                self.log_to_console("USER", text)
 
-            in_follow_up = time.monotonic() < follow_up_until
-            if not (detect_wake_word(text) or in_follow_up):
-                continue
+                in_follow_up = time.monotonic() < follow_up_until
+                if not (detect_wake_word(text) or in_follow_up):
+                    continue
 
-            request = strip_wake_word(text) if detect_wake_word(text) else text
-            if not request:
-                continue
+                request = strip_wake_word(text) if detect_wake_word(text) else text
+                if not request:
+                    continue
 
-            self.update_status("PRIMARY DIRECTIVE . ACTIVE", "PROCESSING", "#FFA500")  # Orange
-            reply = route_request(request)
+                self.update_status("PRIMARY DIRECTIVE . ACTIVE", "PROCESSING", "#FFA500")  # Orange
+                reply = route_request(request)
 
-            self.log_to_console("JARVIS", reply)
-            self.update_status("PRIMARY DIRECTIVE . ACTIVE", "TRANSMITTING", ACCENT_COLOR)  # Teal
-            speak(reply)
+                self.log_to_console("JARVIS", reply)
+                self.update_status("PRIMARY DIRECTIVE . ACTIVE", "TRANSMITTING", ACCENT_COLOR)  # Teal
+                speak(reply)
 
-            capture.enqueue(request, reply)
-            follow_up_until = time.monotonic() + FOLLOW_UP_WINDOW
+                capture.enqueue(request, reply)
+                follow_up_until = time.monotonic() + FOLLOW_UP_WINDOW
+            except Exception as e:
+                # listen() raises OSError when the mic is grabbed by another app or
+                # unplugged; transcription/tempfile writes can raise too. Without this
+                # guard any of those kills the loop thread permanently (the orb keeps
+                # animating, the status is stuck, and Jarvis goes silently deaf for the
+                # rest of the session). Surface it and back off so a permanently-missing
+                # microphone can't hot-spin the thread.
+                self.log_to_console("SYS_ERROR", str(e))
+                time.sleep(1)
 
 if __name__ == "__main__":
     app = VaultCommandCenter()
