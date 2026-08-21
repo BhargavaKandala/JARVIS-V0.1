@@ -1574,19 +1574,45 @@ git commit -m "feat: add background capture pipeline writing to SQLite and vault
 
 ### Task 6: Router
 
+> **Post-implementation note (2026-08-22): scope reduced to capture-only, no escalation.**
+> This task was originally specified as a Hermes-first router: call Hermes with an 8-tool
+> tier, and if it calls an `escalate_to_gemini` tool, fall back to Gemini with the original
+> text. That design is what Task 4's benchmark (see that task's post-implementation note)
+> invalidated — only 1 of 6 requests that needed Gemini actually escalated, and the failures
+> invented plausible-but-wrong tool calls with real side effects (a weather question called
+> `play_on_youtube` and genuinely opened YouTube for 183 seconds). A sharpened prompt at
+> temperature 0 still scored 0/6 on escalation. This is not a prompt-tuning gap. The project
+> owner's decision, already reflected in `llm/hermes.py` since Task 4, is that Hermes is
+> capture-only — it never sees a live user turn. `llm/hermes.py` no longer contains
+> `ask_hermes`, `HERMES_TOOLS`, or `escalate_to_gemini`.
+>
+> With no local brain in the loop, the router has nothing left to route between — it is now a
+> thin, single seam around `ask_gemini` that exists purely so `main.py` has one place to call
+> and one place where cloud-failure handling (quota exhaustion, any other exception) lives,
+> instead of that logic being duplicated or scattered through the GUI/voice loop. The
+> `(reply, brain)` tuple and the `"LOCAL"`/`"CLOUD"` indicator are gone with it — there is only
+> one brain for conversation now, so a two-way indicator is dead weight. The steps below reflect
+> what was actually shipped, not the original Hermes-first design.
+
 **Files:**
 - Create: `llm/router.py`
 - Create: `tests/test_router.py`
 
 **Interfaces:**
-- Consumes: `hermes.ask_hermes` (Task 4); existing `llm.gemini.ask_gemini`.
-- Produces: `router.handle(text: str) -> tuple[str, str]` where the second element is `"LOCAL"` or `"CLOUD"`.
+- Consumes: existing `llm.gemini.ask_gemini`.
+- Produces: `router.handle(text: str) -> str`. Always returns a string safe to speak aloud;
+  never raises.
 
 - [ ] **Step 1: Write the failing tests**
 
-Both brains are mocked; this task tests routing decisions, not model quality.
+`ask_gemini` is mocked; this task tests error classification and the never-raises contract,
+not model quality.
 
-One import-time caveat: `llm/router.py` does `from llm.gemini import ask_gemini`, and `llm/gemini.py` constructs a `ChatGoogleGenerativeAI` client and binds 26 tools at module import. So importing the router requires `GOOGLE_API_KEY` to be present in `.env` — it must be, or the app does not run at all. No network call happens at import, only client construction, so the tests stay offline.
+One import-time caveat: `llm/router.py` does `from llm.gemini import ask_gemini`, and
+`llm/gemini.py` constructs a `ChatGoogleGenerativeAI` client and binds 26 tools at module
+import. So importing the router requires `GOOGLE_API_KEY` to be present in `.env` — it must
+be, or the app does not run at all. No network call happens at import, only client
+construction, so the tests stay offline.
 
 Create `tests/test_router.py`:
 
@@ -1596,52 +1622,59 @@ import pytest
 from llm import router
 
 
-@pytest.fixture(autouse=True)
-def stub_gemini(monkeypatch):
+def test_normal_reply_is_passed_through_unchanged(monkeypatch):
     monkeypatch.setattr(router, "ask_gemini", lambda text: f"gemini: {text}")
+    assert router.handle("what is the weather") == "gemini: what is the weather"
 
 
-def test_local_answer_is_returned_without_touching_gemini(monkeypatch):
-    monkeypatch.setattr(router.hermes, "ask_hermes",
-                        lambda text: {"reply": "four", "escalate": False, "reason": ""})
-    assert router.handle("two plus two") == ("four", "LOCAL")
-
-
-def test_escalation_delegates_the_original_text_to_gemini(monkeypatch):
-    monkeypatch.setattr(router.hermes, "ask_hermes",
-                        lambda text: {"reply": "", "escalate": True, "reason": "needs calendar"})
-    assert router.handle("what is on my calendar") == ("gemini: what is on my calendar", "CLOUD")
-
-
-def test_hermes_exception_falls_back_to_gemini(monkeypatch):
+def test_rate_limit_429_returns_the_rate_limit_constant(monkeypatch):
     def boom(text):
-        raise ConnectionError("Ollama refused the connection")
-    monkeypatch.setattr(router.hermes, "ask_hermes", boom)
-    assert router.handle("hello") == ("gemini: hello", "CLOUD")
-
-
-def test_empty_hermes_reply_falls_back_to_gemini(monkeypatch):
-    monkeypatch.setattr(router.hermes, "ask_hermes",
-                        lambda text: {"reply": "   ", "escalate": False, "reason": ""})
-    assert router.handle("hello") == ("gemini: hello", "CLOUD")
-
-
-def test_gemini_failure_after_escalation_returns_a_spoken_error(monkeypatch):
-    monkeypatch.setattr(router.hermes, "ask_hermes",
-                        lambda text: {"reply": "", "escalate": True, "reason": "x"})
-    def boom(text):
-        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+        raise RuntimeError("429 Client Error: Too Many Requests")
     monkeypatch.setattr(router, "ask_gemini", boom)
 
-    reply, brain = router.handle("hello")
+    assert router.handle("hello") == router.RATE_LIMIT_REPLY
 
-    assert brain == "CLOUD"
-    assert "rate limiting" in reply.lower()
+
+def test_resource_exhausted_returns_the_rate_limit_constant(monkeypatch):
+    def boom(text):
+        raise RuntimeError("google.api_core.exceptions.ResourceExhausted: 429 RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(router, "ask_gemini", boom)
+
+    assert router.handle("hello") == router.RATE_LIMIT_REPLY
+
+
+def test_rate_limit_detection_is_case_insensitive(monkeypatch):
+    def boom(text):
+        raise RuntimeError("quota exceeded: resource_exhausted")
+    monkeypatch.setattr(router, "ask_gemini", boom)
+
+    assert router.handle("hello") == router.RATE_LIMIT_REPLY
+
+
+def test_other_exception_returns_the_generic_constant(monkeypatch):
+    def boom(text):
+        raise ConnectionError("network unreachable")
+    monkeypatch.setattr(router, "ask_gemini", boom)
+
+    assert router.handle("hello") == router.GENERIC_ERROR_REPLY
+
+
+def test_handle_never_raises(monkeypatch):
+    def boom(text):
+        raise ValueError("something unexpected")
+    monkeypatch.setattr(router, "ask_gemini", boom)
+
+    try:
+        result = router.handle("hello")
+    except Exception as e:
+        pytest.fail(f"handle() raised {e!r}, it must never raise")
+
+    assert isinstance(result, str)
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
 
-Run: `uv run pytest tests/test_router.py -v`
+Run: `uv run python -m pytest tests/test_router.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'llm.router'`.
 
 - [ ] **Step 3: Implement llm/router.py**
@@ -1650,50 +1683,52 @@ Create `llm/router.py`:
 
 ```python
 # llm/router.py
-"""Hermes-first routing with escalation to Gemini.
+"""Single entry point for answering one conversation turn.
 
-Escalation discards the Hermes attempt entirely and hands Gemini the ORIGINAL
-user text, so ask_gemini's own conversation history and multi-hop loop stay
-coherent. The two brains never share partial state.
+All conversation goes to Gemini (llm.gemini.ask_gemini). Hermes is
+capture-only now -- see llm/hermes.py's module docstring for why: benchmarked
+against the live model, only 1 of 6 requests that needed Gemini actually
+escalated, and the failures invented plausible-but-wrong tool calls with real
+side effects (a weather question opened YouTube). The project owner decided
+Hermes stays out of the live conversation path.
+
+This module is deliberately small: it is the one seam main.py calls, so
+error handling for cloud failures (quota exhaustion, any other exception)
+lives in exactly one place instead of being scattered through the GUI/voice
+loop. handle() must never raise -- it is called from the voice loop.
 """
-from llm import hermes
 from llm.gemini import ask_gemini
 
-RATE_LIMIT_REPLY = ("Boss, Google is rate limiting my API. Give me a moment to cool down.")
+RATE_LIMIT_REPLY = "Boss, Google is rate limiting my API. Give me a moment to cool down."
 GENERIC_ERROR_REPLY = "I hit an error in my cognitive engine."
 
 
-def handle(text: str):
-    """Answer one turn. Returns (reply, brain) with brain in {'LOCAL', 'CLOUD'}."""
+def handle(text: str) -> str:
+    """Answer one turn. Always returns a string that is safe to speak aloud."""
     try:
-        result = hermes.ask_hermes(text)
-        if not result["escalate"] and result["reply"].strip():
-            return result["reply"], "LOCAL"
-        if result["escalate"]:
-            print(f"[router] escalating: {result['reason']}")
+        return ask_gemini(text)
     except Exception as e:
-        print(f"[router] hermes unavailable, escalating: {e}")
-
-    try:
-        return ask_gemini(text), "CLOUD"
-    except Exception as e:
-        message = str(e)
+        message = str(e).upper()
         if "429" in message or "RESOURCE_EXHAUSTED" in message:
-            return RATE_LIMIT_REPLY, "CLOUD"
+            return RATE_LIMIT_REPLY
         print(f"[router] gemini failed: {e}")
-        return GENERIC_ERROR_REPLY, "CLOUD"
+        return GENERIC_ERROR_REPLY
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
-Run: `uv run pytest tests/test_router.py -v`
-Expected: 5 passed.
+Run: `uv run python -m pytest tests/test_router.py -v`
+Expected: 6 passed. (The original Hermes-first design had 5 tests covering routing decisions
+between two brains; with only one brain left, those became 6 tests covering error
+classification instead — pass-through, `429`, `RESOURCE_EXHAUSTED`, case-insensitivity of that
+detection, any other exception, and the never-raises contract. A +1 delta that propagates to
+the cumulative counts in Tasks 7 and 8.)
 
 - [ ] **Step 5: Commit**
 
 ```bash
 git add llm/router.py tests/test_router.py
-git commit -m "feat: add Hermes-first router with escalation to Gemini"
+git commit -m "feat: add router as single entry point, capture-only Hermes stays out of conversation"
 ```
 
 ---
@@ -1936,10 +1971,12 @@ In `main.py`, replace the entire `event_loop` method (lines 272-294) with:
 - [ ] **Step 6: Verify the full suite still passes**
 
 Run: `uv run pytest tests/ -v`
-Expected: 76 passed. (This cumulative figure was already stale by 4 before this fix pass -- the
-prior sum of Tasks 1-7's own counts is 74, not the 70 previously stated here. On top of that,
-a further +2 delta carries in from Task 5's post-review fix pass -- see that task's Step 4 --
-for a corrected total of 76.)
+Expected: 77 passed. (This cumulative figure was already stale by 4 before an earlier fix pass --
+the prior sum of Tasks 1-7's own counts was 74, not the 70 previously stated here. A further +2
+delta carried in from Task 5's post-review fix pass -- see that task's Step 4 -- for a corrected
+total of 76. On top of that, Task 6's scope reduction to a single-brain router (see that task's
+post-implementation note) changed its own test count from 5 to 6 -- a further +1 delta -- for a
+corrected total of 77.)
 
 - [ ] **Step 7: Manual end-to-end verification**
 
