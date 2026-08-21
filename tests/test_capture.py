@@ -201,6 +201,25 @@ def test_duplicate_entity_in_payload_creates_no_self_relationship(temp_db):
         "SELECT COUNT(*) c FROM entities WHERE name = 'Ravi'").fetchone()["c"] == 1
 
 
+def test_listener_is_not_notified_when_the_memory_row_fails(temp_db, monkeypatch):
+    """main.py's on_capture logs "MEMORY> ..." unconditionally whenever the
+    listener fires. If add_memory raises (memory_id is None), the listener
+    must not fire, or the GUI tells the user something was saved that wasn't."""
+    def boom(**kwargs):
+        raise RuntimeError("database is locked")
+    monkeypatch.setattr(capture.store, "add_memory", boom)
+
+    seen = []
+    capture.set_listener(seen.append)
+    try:
+        memory_id = capture.persist_capture(_payload(), "src")
+    finally:
+        capture.set_listener(None)
+
+    assert memory_id is None
+    assert seen == []
+
+
 def test_falsy_daily_note_return_is_reported(temp_db, monkeypatch, capsys):
     """A vault answering 4xx/5xx (returning False, not raising) for the daily
     note append must be distinguishable from success -- otherwise capture

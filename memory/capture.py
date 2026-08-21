@@ -103,7 +103,10 @@ def persist_capture(payload: dict, source_text: str):
         except Exception as e:
             print(f"[capture] entity page '{entity.get('name')}' failed: {e}")
 
-    if _listener is not None:
+    # Gated on memory_id: add_memory raising above (DB lock, malformed entity
+    # dict) must not still tell the GUI a memory was saved -- main.py's
+    # on_capture logs "MEMORY> ..." unconditionally on every listener call.
+    if _listener is not None and memory_id is not None:
         try:
             _listener(payload)
         except Exception as e:
