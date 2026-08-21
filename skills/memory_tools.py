@@ -1,5 +1,4 @@
 # skills/memory_tools.py
-import os
 from langchain_core.tools import tool
 from memory import store
 from memory import vault
@@ -8,7 +7,11 @@ from memory import vector_store
 @tool
 def save_memory(filename: str, content: str) -> str:
     """Saves a new memory, note, preference, or idea to the Obsidian vault."""
-    clean_name = filename.replace(".md", "").strip() + ".md"
+    # sanitize_entity_name maps "/" and "\" to "-" and strips "../"-style path
+    # separators, so an LLM-chosen filename like "Journal/2026-08-22" can't
+    # PUT-replace an unrelated file (e.g. a whole day's accumulated captures)
+    # or escape the vault root.
+    clean_name = vault.sanitize_entity_name(filename.replace(".md", "").strip()) + ".md"
 
     try:
         response = vault.put_note(clean_name, content)
