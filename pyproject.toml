@@ -17,7 +17,6 @@ dependencies = [
     "langchain-ollama>=0.3.0",
     "numpy>=2.4.6",
     "pyaudio>=0.2.14",
-    "pytest>=8.0.0",
     "pygame>=2.6.1",
     "pytesseract>=0.3.10",
     "python-dotenv>=1.2.2",
@@ -29,3 +28,11 @@ dependencies = [
     "soundfile>=0.14.0",
     "speechrecognition>=3.16.1",
 ]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]

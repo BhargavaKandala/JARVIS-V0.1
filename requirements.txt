@@ -49,7 +49,6 @@ click==8.4.1
 colorama==0.4.6
     # via
     #   click
-    #   pytest
     #   tqdm
 comtypes==1.4.16
     # via pyttsx3
@@ -135,8 +134,6 @@ idna==3.18
     #   httpx
     #   requests
     #   yarl
-iniconfig==2.3.0
-    # via pytest
 isodate==0.7.2
     # via csvw
 itsdangerous==2.2.0
@@ -233,15 +230,12 @@ packaging==26.2
     #   langsmith
     #   onnxruntime
     #   pytesseract
-    #   pytest
 phonemizer-fork==3.3.2
     # via kokoro-onnx
 pillow==12.2.0
     # via
     #   pytesseract
     #   pywhatkit
-pluggy==1.6.0
-    # via pytest
 propcache==0.5.2
     # via
     #   aiohttp
@@ -280,9 +274,7 @@ pygame==2.6.1
 pygetwindow==0.0.9
     # via pyautogui
 pygments==2.20.0
-    # via
-    #   pytest
-    #   rich
+    # via rich
 pymsgbox==2.0.1
     # via pyautogui
 pyparsing==3.3.2
@@ -298,8 +290,6 @@ pyrect==0.2.0
 pyscreeze==1.0.1
     # via pyautogui
 pytesseract==0.3.13
-    # via jarvis-v0-1 (pyproject.toml)
-pytest==9.1.1
     # via jarvis-v0-1 (pyproject.toml)
 python-dateutil==2.9.0.post0
     # via csvw
