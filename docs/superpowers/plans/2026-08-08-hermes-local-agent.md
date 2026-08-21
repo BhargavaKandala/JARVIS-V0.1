@@ -1866,7 +1866,7 @@ _leading_pattern = "|".join(re.escape(w) for w in sorted(_AMBIGUOUS_WAKE_WORDS))
 # Single pattern shared by detect_wake_word and strip_wake_word so the two
 # can never disagree about whether/where a wake word is present.
 _WAKE_WORD_RE = re.compile(
-    rf"^(?:{_leading_pattern})\b{_TRAILING}|\b(?:{_anywhere_pattern})\b{_TRAILING}",
+    rf"^\s*(?:{_leading_pattern})\b{_TRAILING}|\b(?:{_anywhere_pattern})\b{_TRAILING}",
     re.IGNORECASE,
 )
 
