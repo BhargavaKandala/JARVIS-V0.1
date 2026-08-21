@@ -1,5 +1,14 @@
 # Hermes Local Agent + Obsidian Second Brain Implementation Plan
 
+> **SUPERSEDED.** The escalation design described below (a router calling Hermes
+> first, with an `escalate_to_gemini` tool for out-of-tier requests) was reversed
+> after benchmarking: only 1 of 6 requests that needed Gemini actually escalated,
+> and the rest invented plausible-but-wrong tool calls with real side effects. Hermes
+> shipped as capture-only instead — all conversation goes to Gemini via
+> `llm/gemini.py::ask_gemini` (see `llm/router.py`, `llm/hermes.py`'s module
+> docstring). The corrections are noted further down in this document; this banner
+> exists so they aren't missed. Kept as a historical record, not rewritten.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Add Nous Hermes 3 8B as a local Ollama-backed brain that handles common requests without a network call, and make the Obsidian vault fill itself with linked daily notes and entity pages after every conversation.

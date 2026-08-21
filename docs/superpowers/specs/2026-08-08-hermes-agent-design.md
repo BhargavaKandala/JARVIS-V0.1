@@ -1,7 +1,16 @@
 # Hermes Local Agent + Obsidian Second Brain — Design
 
 Date: 2026-08-08
-Status: Approved, ready for implementation planning
+Status: SUPERSEDED — Hermes reduced to capture-only; see llm/hermes.py module docstring
+
+> **SUPERSEDED.** The live-conversation escalation design below (Hermes answering
+> locally, calling `escalate_to_gemini` when out of its depth) was implemented and
+> then reversed after benchmarking: only 1 of 6 requests that needed Gemini actually
+> escalated, and the rest invented plausible-but-wrong tool calls with real side
+> effects (e.g. a weather question opened YouTube). Hermes is now capture-only —
+> all conversation goes to Gemini via `llm/gemini.py::ask_gemini`. This document is
+> kept as a historical record and is **not** rewritten to match; see
+> `llm/hermes.py`'s module docstring and `llm/router.py` for what actually shipped.
 
 ## Goal
 
