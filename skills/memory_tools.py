@@ -11,9 +11,11 @@ def save_memory(filename: str, content: str) -> str:
     clean_name = filename.replace(".md", "").strip() + ".md"
 
     try:
-        ok = vault.put_note(clean_name, content)
-        result = (f"Successfully saved memory to {clean_name}" if ok
-                  else f"Failed to save {clean_name} to Obsidian")
+        response = vault.put_note(clean_name, content)
+        if response.status_code in (200, 201, 204):
+            result = f"Successfully saved memory to {clean_name}"
+        else:
+            result = f"Failed to save: {response.text} (Status Code: {response.status_code})"
     except Exception as e:
         result = f"Error connecting to Obsidian: {str(e)}"
 

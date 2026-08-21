@@ -30,8 +30,10 @@ DAILY_DIR = "Journal"
 ENTITY_DIR = "Entities"
 TIMEOUT = 5
 
-# Characters Obsidian treats as structural in filenames or wikilinks.
-_RESERVED = re.compile(r"[\[\]:|#^]")
+# Characters Obsidian treats as structural in filenames or wikilinks, plus the
+# remaining characters Windows forbids in filenames (this project is Windows-only
+# and entity names may be produced by an LLM, so `<>"?*` are realistic inputs).
+_RESERVED = re.compile(r'[\[\]:|#^<>"?*]')
 
 
 def _url(path: str) -> str:
@@ -65,11 +67,17 @@ def format_capture_line(kind: str, text: str, entity_names: list, when: datetime
 
 # --- REST calls -------------------------------------------------------------
 
-def put_note(path: str, content: str) -> bool:
-    """Replace a note's contents. Returns True on success."""
+def _ok(response) -> bool:
+    return response.status_code in (200, 201, 204)
+
+
+def put_note(path: str, content: str) -> requests.Response:
+    """Replace a note's contents. Returns the raw response so callers can
+    check success via `_ok(response)` and, on failure, reconstruct a
+    diagnostic message from `response.status_code` / `response.text`."""
     response = requests.put(_url(path), headers=HEADERS, data=content.encode("utf-8"),
                             verify=False, timeout=TIMEOUT)
-    return response.status_code in (200, 201, 204)
+    return response
 
 
 def get_note(path: str) -> str:
@@ -86,7 +94,7 @@ def append_daily_note(line: str, when: date = None) -> bool:
     path = daily_note_path(when)
     response = requests.post(_url(path), headers=HEADERS, data=f"{line}\n".encode("utf-8"),
                              verify=False, timeout=TIMEOUT)
-    return response.status_code in (200, 201, 204)
+    return _ok(response)
 
 
 def ensure_entity_page(name: str, type_: str) -> bool:
@@ -103,4 +111,4 @@ def ensure_entity_page(name: str, type_: str) -> bool:
         f"# {safe}\n\n"
         "Mentions of this entity appear in the Backlinks pane.\n"
     )
-    return put_note(path, content)
+    return _ok(put_note(path, content))

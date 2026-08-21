@@ -211,17 +211,25 @@ git commit -m "feat: add ollama settings, langchain-ollama dep, and pytest harne
   - `vault.format_capture_line(kind: str, text: str, entity_names: list[str], when: datetime | None = None) -> str`
   - `vault.append_daily_note(line: str, when: date | None = None) -> bool`
   - `vault.ensure_entity_page(name: str, type_: str) -> bool`
-  - `vault.put_note(path: str, content: str) -> bool`
+  - `vault.put_note(path: str, content: str) -> requests.Response` (raw response, so a caller can build a diagnostic message from `response.status_code` / `response.text` on failure)
   - `vault.get_note(path: str) -> str | None`
 
 - [ ] **Step 1: Write the failing formatting tests**
 
-These four functions are pure — no HTTP, no clock, no DB — which is why they are the only part of the vault layer worth unit testing. Create `tests/test_vault.py`:
+These four functions are pure — no HTTP, no clock, no DB — which is why they are the only part of the vault layer worth unit testing. The REST functions get their own regression coverage below: this project is Windows-only, so `sanitize_entity_name` must also handle the Windows-illegal characters `< > " ? *` (not just Obsidian's structural characters), and the POST-vs-PUT verb distinction in `append_daily_note` vs `put_note` is pinned with mocked `requests` calls, because a PUT there would silently destroy a whole day's accumulated notes. Create `tests/test_vault.py`:
 
 ```python
 from datetime import date, datetime
+from unittest.mock import MagicMock, patch
 
 from memory import vault
+
+
+def _mock_response(status_code=200, text=""):
+    response = MagicMock()
+    response.status_code = status_code
+    response.text = text
+    return response
 
 
 def test_daily_note_path_uses_journal_dir_and_iso_date():
@@ -236,6 +244,14 @@ def test_sanitize_strips_obsidian_reserved_characters():
 
 def test_sanitize_collapses_whitespace_and_trims():
     assert vault.sanitize_entity_name("  Auth   Refactor  ") == "Auth Refactor"
+
+
+def test_sanitize_strips_remaining_windows_illegal_characters():
+    assert vault.sanitize_entity_name("What?") == "What"
+    assert vault.sanitize_entity_name('"quoted"') == "quoted"
+    assert vault.sanitize_entity_name("<tag>") == "tag"
+    assert vault.sanitize_entity_name("a*b") == "ab"
+    assert vault.sanitize_entity_name('<>:"/\\|?*') == "--"
 
 
 def test_entity_note_path_uses_sanitized_name():
@@ -271,6 +287,76 @@ def test_format_capture_line_flattens_newlines_in_text():
         "fact", "line one\nline two", [], when=datetime(2026, 8, 8, 9, 5)
     )
     assert line == "- 09:05 [fact] line one line two"
+
+
+# --- REST verb regression tests ---------------------------------------------
+#
+# A PUT in append_daily_note would silently replace (destroy) a whole day's
+# accumulated notes where POST appends. These tests pin the verb, and the
+# path/URL each call targets, so that regression can't sneak back in.
+
+def test_put_note_issues_a_put_to_the_correct_url():
+    with patch("memory.vault.requests.put") as mock_put, \
+         patch("memory.vault.requests.post") as mock_post:
+        mock_put.return_value = _mock_response(200)
+
+        vault.put_note("Journal/2026-08-08.md", "content")
+
+        mock_put.assert_called_once()
+        mock_post.assert_not_called()
+        called_url = mock_put.call_args.args[0]
+        assert called_url == vault._url("Journal/2026-08-08.md")
+
+
+def test_put_note_returns_the_response_for_diagnostics():
+    with patch("memory.vault.requests.put") as mock_put:
+        mock_put.return_value = _mock_response(500, "Internal Server Error")
+
+        response = vault.put_note("x.md", "content")
+
+        assert response.status_code == 500
+        assert response.text == "Internal Server Error"
+
+
+def test_append_daily_note_issues_a_post_not_a_put():
+    with patch("memory.vault.requests.post") as mock_post, \
+         patch("memory.vault.requests.put") as mock_put:
+        mock_post.return_value = _mock_response(200)
+
+        vault.append_daily_note("- 09:00 [fact] hi", when=date(2026, 8, 8))
+
+        mock_post.assert_called_once()
+        mock_put.assert_not_called()
+        called_url = mock_post.call_args.args[0]
+        assert called_url == vault._url("Journal/2026-08-08.md")
+
+
+def test_ensure_entity_page_creates_via_put_and_never_posts_when_absent():
+    with patch("memory.vault.requests.get") as mock_get, \
+         patch("memory.vault.requests.put") as mock_put, \
+         patch("memory.vault.requests.post") as mock_post:
+        mock_get.return_value = _mock_response(404)
+        mock_put.return_value = _mock_response(201)
+
+        vault.ensure_entity_page("Ravi", "person")
+
+        mock_put.assert_called_once()
+        mock_post.assert_not_called()
+        called_url = mock_put.call_args.args[0]
+        assert called_url == vault._url("Entities/Ravi.md")
+
+
+def test_ensure_entity_page_is_a_noop_when_the_page_already_exists():
+    with patch("memory.vault.requests.get") as mock_get, \
+         patch("memory.vault.requests.put") as mock_put, \
+         patch("memory.vault.requests.post") as mock_post:
+        mock_get.return_value = _mock_response(200, "already here")
+
+        result = vault.ensure_entity_page("Ravi", "person")
+
+        assert result is True
+        mock_put.assert_not_called()
+        mock_post.assert_not_called()
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -317,8 +403,10 @@ DAILY_DIR = "Journal"
 ENTITY_DIR = "Entities"
 TIMEOUT = 5
 
-# Characters Obsidian treats as structural in filenames or wikilinks.
-_RESERVED = re.compile(r"[\[\]:|#^]")
+# Characters Obsidian treats as structural in filenames or wikilinks, plus the
+# remaining characters Windows forbids in filenames (this project is Windows-only
+# and entity names may be produced by an LLM, so `<>"?*` are realistic inputs).
+_RESERVED = re.compile(r'[\[\]:|#^<>"?*]')
 
 
 def _url(path: str) -> str:
@@ -352,11 +440,17 @@ def format_capture_line(kind: str, text: str, entity_names: list, when: datetime
 
 # --- REST calls -------------------------------------------------------------
 
-def put_note(path: str, content: str) -> bool:
-    """Replace a note's contents. Returns True on success."""
+def _ok(response) -> bool:
+    return response.status_code in (200, 201, 204)
+
+
+def put_note(path: str, content: str) -> requests.Response:
+    """Replace a note's contents. Returns the raw response so callers can
+    check success via `_ok(response)` and, on failure, reconstruct a
+    diagnostic message from `response.status_code` / `response.text`."""
     response = requests.put(_url(path), headers=HEADERS, data=content.encode("utf-8"),
                             verify=False, timeout=TIMEOUT)
-    return response.status_code in (200, 201, 204)
+    return response
 
 
 def get_note(path: str) -> str:
@@ -373,7 +467,7 @@ def append_daily_note(line: str, when: date = None) -> bool:
     path = daily_note_path(when)
     response = requests.post(_url(path), headers=HEADERS, data=f"{line}\n".encode("utf-8"),
                              verify=False, timeout=TIMEOUT)
-    return response.status_code in (200, 201, 204)
+    return _ok(response)
 
 
 def ensure_entity_page(name: str, type_: str) -> bool:
@@ -390,13 +484,13 @@ def ensure_entity_page(name: str, type_: str) -> bool:
         f"# {safe}\n\n"
         "Mentions of this entity appear in the Backlinks pane.\n"
     )
-    return put_note(path, content)
+    return _ok(put_note(path, content))
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_vault.py -v`
-Expected: 8 passed.
+Expected: 14 passed.
 
 - [ ] **Step 5: Delegate memory_tools HTTP to the vault module**
 
@@ -421,9 +515,11 @@ def save_memory(filename: str, content: str) -> str:
     clean_name = filename.replace(".md", "").strip() + ".md"
 
     try:
-        ok = vault.put_note(clean_name, content)
-        result = (f"Successfully saved memory to {clean_name}" if ok
-                  else f"Failed to save {clean_name} to Obsidian")
+        response = vault.put_note(clean_name, content)
+        if response.status_code in (200, 201, 204):
+            result = f"Successfully saved memory to {clean_name}"
+        else:
+            result = f"Failed to save: {response.text} (Status Code: {response.status_code})"
     except Exception as e:
         result = f"Error connecting to Obsidian: {str(e)}"
 
@@ -1350,7 +1446,7 @@ Expected: 14 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `uv run pytest tests/ -v`
-Expected: 47 passed.
+Expected: 53 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`; every cumulative count below carries that +6 delta.)
 
 - [ ] **Step 6: Commit**
 
@@ -1725,7 +1821,7 @@ In `main.py`, replace the entire `event_loop` method (lines 272-294) with:
 - [ ] **Step 6: Verify the full suite still passes**
 
 Run: `uv run pytest tests/ -v`
-Expected: 60 passed.
+Expected: 66 passed.
 
 - [ ] **Step 7: Manual end-to-end verification**
 
