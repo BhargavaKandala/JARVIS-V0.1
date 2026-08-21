@@ -265,36 +265,50 @@ class VaultCommandCenter(ctk.CTk):
         self.after(30, self.animate_orb)
 
     def log_to_console(self, speaker, message):
-        self.console.configure(state="normal")
-        color = ACCENT_COLOR if speaker == "JARVIS" else "#FFFFFF"
-        if speaker == "SYS_ERROR": color = ALERT_COLOR
-        
-        # Insert tag, then message
-        self.console.insert("end", f"{speaker}> ")
-        self.console.insert("end", f"{message}\n\n")
-        self.console.see("end")
-        self.console.configure(state="disabled")
+        """Safe to call from any thread: Tkinter widgets may only be touched
+        from the main thread, so the actual mutation is marshalled onto the
+        Tk event loop via self.after(0, ...). Do not remove the indirection."""
+        def _do(speaker=speaker, message=message):
+            self.console.configure(state="normal")
+            color = ACCENT_COLOR if speaker == "JARVIS" else "#FFFFFF"
+            if speaker == "SYS_ERROR": color = ALERT_COLOR
+
+            # Insert tag, then message
+            self.console.insert("end", f"{speaker}> ")
+            self.console.insert("end", f"{message}\n\n")
+            self.console.see("end")
+            self.console.configure(state="disabled")
+        self.after(0, _do)
 
     def update_status(self, sub_text, main_text, color):
-        self.core_status_label.configure(text=sub_text)
-        self.main_state_label.configure(text=main_text, text_color=color)
+        """Safe to call from any thread: Tkinter widgets may only be touched
+        from the main thread, so the actual mutation is marshalled onto the
+        Tk event loop via self.after(0, ...). Do not remove the indirection."""
+        def _do(sub_text=sub_text, main_text=main_text, color=color):
+            self.core_status_label.configure(text=sub_text)
+            self.main_state_label.configure(text=main_text, text_color=color)
+        self.after(0, _do)
 
     def refresh_vault_panel(self):
-        """Show the most recent captures. Main thread only."""
+        """Show the most recent captures. Safe to call from any thread: the
+        widget mutation is marshalled onto the Tk event loop via
+        self.after(0, ...). Do not remove the indirection."""
         try:
             memories = store.list_memories(limit=5)
         except Exception:
             return
         if not memories:
-            self.docs_list.configure(text="(empty)")
+            self.after(0, lambda: self.docs_list.configure(text="(empty)"))
             return
         lines = [f"{m['kind']}: {m['content'][:34]}" for m in memories]
-        self.docs_list.configure(text="\n".join(lines))
+        text = "\n".join(lines)
+        self.after(0, lambda text=text: self.docs_list.configure(text=text))
 
     def on_capture(self, payload):
-        """Capture-thread callback. Tkinter is main-thread only, hence after(0, ...)."""
-        self.after(0, self.refresh_vault_panel)
-        self.after(0, lambda: self.log_to_console("MEMORY", f"[{payload['kind']}] {payload['text']}"))
+        """Capture-thread callback. refresh_vault_panel and log_to_console are
+        self-marshalling, so they can be called directly here."""
+        self.refresh_vault_panel()
+        self.log_to_console("MEMORY", f"[{payload['kind']}] {payload['text']}")
 
     def event_loop(self):
         time.sleep(2)
