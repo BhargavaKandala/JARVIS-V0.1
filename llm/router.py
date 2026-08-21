@@ -13,6 +13,7 @@ error handling for cloud failures (quota exhaustion, any other exception)
 lives in exactly one place instead of being scattered through the GUI/voice
 loop. handle() must never raise -- it is called from the voice loop.
 """
+import llm.gemini as _gemini
 from llm.gemini import ask_gemini
 
 RATE_LIMIT_REPLY = "Boss, Google is rate limiting my API. Give me a moment to cool down."
@@ -24,6 +25,14 @@ def handle(text: str) -> str:
     try:
         return ask_gemini(text)
     except Exception as e:
+        # gemini.py trims history with messages[-20:], which can slice a
+        # ToolMessage away from the AIMessage carrying its tool_call. Gemini
+        # then rejects the function response -- and because ask_gemini raises
+        # *before* reassigning conversation_history, the corrupt tail is never
+        # overwritten, so every later turn fails identically until restart.
+        # Reset it here so the next turn starts clean instead of wedging the
+        # whole session on one bad tail.
+        _gemini.conversation_history = []
         message = str(e).upper()
         if "429" in message or "RESOURCE_EXHAUSTED" in message:
             return RATE_LIMIT_REPLY

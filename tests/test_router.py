@@ -51,3 +51,34 @@ def test_handle_never_raises(monkeypatch):
         pytest.fail(f"handle() raised {e!r}, it must never raise")
 
     assert isinstance(result, str)
+
+
+# --- history-reset-on-failure --------------------------------------------
+#
+# gemini.py's messages[-20:] trim can slice a ToolMessage away from the
+# AIMessage carrying its tool_call, and since ask_gemini raises before
+# reassigning conversation_history, the corrupt tail persists and wedges
+# every later turn until restart. router.handle must reset it on any
+# raise so the next turn starts clean -- but must NOT touch it on success,
+# since gemini.py owns the history in the normal path.
+
+def test_history_is_reset_when_ask_gemini_raises(monkeypatch):
+    router._gemini.conversation_history = ["corrupt", "tail"]
+
+    def boom(text):
+        raise RuntimeError("Gemini rejected the function response")
+    monkeypatch.setattr(router, "ask_gemini", boom)
+
+    router.handle("hello")
+
+    assert router._gemini.conversation_history == []
+
+
+def test_history_is_untouched_on_a_successful_turn(monkeypatch):
+    sentinel = ["existing", "history"]
+    router._gemini.conversation_history = sentinel
+    monkeypatch.setattr(router, "ask_gemini", lambda text: "a fine reply")
+
+    router.handle("hello")
+
+    assert router._gemini.conversation_history is sentinel
