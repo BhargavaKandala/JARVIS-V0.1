@@ -38,22 +38,38 @@ def persist_capture(payload: dict, source_text: str):
         except Exception as e:
             print(f"[capture] entity '{entity.get('name')}' failed: {e}")
 
+    # Dedup preserving order (first occurrence wins). A payload can name the
+    # same entity twice, which would otherwise leave a duplicate id in
+    # entity_ids and produce a meaningless self-referential relationship
+    # below (add_relationship(id, id, ...)).
+    seen_ids = set()
+    entity_ids = [eid for eid in entity_ids if not (eid in seen_ids or seen_ids.add(eid))]
+
     primary_id = entity_ids[0] if entity_ids else None
 
-    # 2. Memory row. entity_id is how a memory attaches to an entity.
-    memory_id = store.add_memory(
-        kind=payload["kind"],
-        content=payload["text"],
-        title=entities[0]["name"] if entities else None,
-        entity_id=primary_id,
-        tags=[e["name"] for e in entities],
-        source="auto_capture",
-    )
-
+    # 2. Memory row. entity_id is how a memory attaches to an entity. Guarded
+    # like every other step: a DB lock or a malformed entity dict (missing
+    # "name"/"type") here must not skip the co-occurrence edges, the
+    # commitment task, the daily-note append, the entity pages, or the
+    # listener callback below.
     try:
-        vector_store.index_memory(memory_id, payload["text"])
+        memory_id = store.add_memory(
+            kind=payload["kind"],
+            content=payload["text"],
+            title=entities[0]["name"] if entities else None,
+            entity_id=primary_id,
+            tags=[e["name"] for e in entities],
+            source="auto_capture",
+        )
     except Exception as e:
-        print(f"[capture] embedding failed: {e}")
+        print(f"[capture] memory row failed: {e}")
+        memory_id = None
+
+    if memory_id is not None:
+        try:
+            vector_store.index_memory(memory_id, payload["text"])
+        except Exception as e:
+            print(f"[capture] embedding failed: {e}")
 
     # 3. Co-occurrence edges. add_relationship is entity-to-entity only.
     for other_id in entity_ids[1:]:

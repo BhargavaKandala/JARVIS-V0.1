@@ -1446,22 +1446,38 @@ def persist_capture(payload: dict, source_text: str):
         except Exception as e:
             print(f"[capture] entity '{entity.get('name')}' failed: {e}")
 
+    # Dedup preserving order (first occurrence wins). A payload can name the
+    # same entity twice, which would otherwise leave a duplicate id in
+    # entity_ids and produce a meaningless self-referential relationship
+    # below (add_relationship(id, id, ...)).
+    seen_ids = set()
+    entity_ids = [eid for eid in entity_ids if not (eid in seen_ids or seen_ids.add(eid))]
+
     primary_id = entity_ids[0] if entity_ids else None
 
-    # 2. Memory row. entity_id is how a memory attaches to an entity.
-    memory_id = store.add_memory(
-        kind=payload["kind"],
-        content=payload["text"],
-        title=entities[0]["name"] if entities else None,
-        entity_id=primary_id,
-        tags=[e["name"] for e in entities],
-        source="auto_capture",
-    )
-
+    # 2. Memory row. entity_id is how a memory attaches to an entity. Guarded
+    # like every other step: a DB lock or a malformed entity dict (missing
+    # "name"/"type") here must not skip the co-occurrence edges, the
+    # commitment task, the daily-note append, the entity pages, or the
+    # listener callback below.
     try:
-        vector_store.index_memory(memory_id, payload["text"])
+        memory_id = store.add_memory(
+            kind=payload["kind"],
+            content=payload["text"],
+            title=entities[0]["name"] if entities else None,
+            entity_id=primary_id,
+            tags=[e["name"] for e in entities],
+            source="auto_capture",
+        )
     except Exception as e:
-        print(f"[capture] embedding failed: {e}")
+        print(f"[capture] memory row failed: {e}")
+        memory_id = None
+
+    if memory_id is not None:
+        try:
+            vector_store.index_memory(memory_id, payload["text"])
+        except Exception as e:
+            print(f"[capture] embedding failed: {e}")
 
     # 3. Co-occurrence edges. add_relationship is entity-to-entity only.
     for other_id in entity_ids[1:]:
@@ -1530,12 +1546,22 @@ def enqueue(user_text: str, reply: str) -> None:
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_capture.py -v`
-Expected: 14 passed.
+Expected: 16 passed. (Original 14 plus 2 added in a post-review fix pass: a reviewer found
+`store.add_memory` was the one write step in `persist_capture` left unguarded — a DB lock or a
+malformed entity dict there would propagate out and skip every step after it, including the
+co-occurrence edges, the commitment task, the daily-note append, the entity pages, and the
+listener callback. It is now wrapped in its own try/except, falling back to `memory_id = None`
+so every later step still runs, and the embedding step explicitly skips rather than calling
+`vector_store.index_memory(None, ...)`. The reviewer also found that a payload naming the same
+entity twice left a duplicate id in `entity_ids`, producing a meaningless self-referential
+`add_relationship(id, id, "mentioned_with")` row; `entity_ids` is now deduplicated in place
+(order-preserving, first occurrence wins) right after entity creation, before `primary_id` is
+read off it. A +2 delta that propagates to the cumulative count below and into Tasks 6-8.)
 
 - [ ] **Step 5: Run the whole suite**
 
 Run: `uv run pytest tests/ -v`
-Expected: 61 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`, a +6 delta; Task 3's own count grew from 5 to 9 after a review-driven fix pass to `scripts/reindex_embeddings.py`, a further +4 delta; Task 4's own count grew from 16 to 20 after adding the past-due-date guard and its tests, a further +4 delta; every cumulative count below carries all three.)
+Expected: 63 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`, a +6 delta; Task 3's own count grew from 5 to 9 after a review-driven fix pass to `scripts/reindex_embeddings.py`, a further +4 delta; Task 4's own count grew from 16 to 20 after adding the past-due-date guard and its tests, a further +4 delta; Task 5's own count grew from 14 to 16 after the unguarded-memory-row and self-referential-relationship fixes above, a further +2 delta; every cumulative count below carries all four.)
 
 - [ ] **Step 6: Commit**
 
@@ -1910,7 +1936,10 @@ In `main.py`, replace the entire `event_loop` method (lines 272-294) with:
 - [ ] **Step 6: Verify the full suite still passes**
 
 Run: `uv run pytest tests/ -v`
-Expected: 70 passed.
+Expected: 76 passed. (This cumulative figure was already stale by 4 before this fix pass -- the
+prior sum of Tasks 1-7's own counts is 74, not the 70 previously stated here. On top of that,
+a further +2 delta carries in from Task 5's post-review fix pass -- see that task's Step 4 --
+for a corrected total of 76.)
 
 - [ ] **Step 7: Manual end-to-end verification**
 
