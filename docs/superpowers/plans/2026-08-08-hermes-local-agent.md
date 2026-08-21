@@ -701,23 +701,38 @@ In `memory/vector_store.py`, replace the `rows = conn.execute(...)` call at the 
 - [ ] **Step 5: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_vector_store.py -v`
-Expected: 5 passed.
+Expected: 9 passed. (Original 5 plus 4 added in a post-review fix pass covering the migration
+script's failure behavior — see Step 6 note below.)
 
 - [ ] **Step 6: Write the reindex migration script**
 
-Create `scripts/reindex_embeddings.py`:
+Create `scripts/reindex_embeddings.py`. Note: the version below is the *shipped* version,
+already incorporating a review fix. The first draft purged all stale-model rows
+unconditionally after the re-embed loop (`DELETE FROM embeddings WHERE model != ?`), which
+is unsafe — if the embedder is down and every row fails, that line still deletes every
+surviving old-model embedding while zero new ones were written, destroying data. The fix
+scopes the purge to only the `memory_id`s that were *successfully* re-embedded this run, and
+gives the operator an unmistakable console message in every outcome (full success, partial
+failure, total failure). The backup suffix also gained a time component (not just the date)
+so a same-day re-run can never overwrite the true pre-migration snapshot.
 
 ```python
 """One-shot migration: re-embed every memory with the active local model.
 
 gemini-embedding-001 produced 3072-dim vectors; nomic-embed-text produces 768.
 Mixing dimensions in one table breaks cosine search, so every row is rewritten.
-Safe to re-run.
+
+Safe to re-run: the purge of old-model rows is scoped to only the memories
+that were *successfully* re-embedded in this run. If the embedder is down
+(e.g. Ollama not running) and every row fails, nothing is deleted and the
+script can simply be re-run once the embedder is back. If only some rows
+fail, the surviving old-model rows for those specific memories are left in
+place rather than destroyed, and re-running finishes the job.
 """
 import os
 import shutil
 import sys
-from datetime import date
+from datetime import datetime
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -727,26 +742,58 @@ from memory import store, vector_store  # noqa: E402
 def main():
     conn = store._get_conn()
 
-    backup = f"{store.DB_PATH}.bak-{date.today().strftime('%Y%m%d')}"
+    # Timestamped (not just dated) so a second run on the same day can never
+    # overwrite the pre-migration snapshot from an earlier run today. Taken
+    # before any mutation.
+    backup = f"{store.DB_PATH}.bak-{datetime.now().strftime('%Y%m%d-%H%M%S-%f')}"
     shutil.copyfile(store.DB_PATH, backup)
     print(f"[*] Backed up database to {backup}")
 
     rows = conn.execute("SELECT id, content FROM memories ORDER BY id").fetchall()
     print(f"[*] Re-embedding {len(rows)} memories with {vector_store.EMBEDDING_MODEL}...")
 
-    done, failed = 0, 0
+    succeeded_ids = []
+    failed = 0
     for row in rows:
         try:
             vector_store.index_memory(row["id"], row["content"])
-            done += 1
+            succeeded_ids.append(row["id"])
         except Exception as e:
             failed += 1
             print(f"    ! memory {row['id']} failed: {e}")
 
-    conn.execute("DELETE FROM embeddings WHERE model != ?", (vector_store.EMBEDDING_MODEL,))
-    conn.commit()
+    done = len(succeeded_ids)
 
-    print(f"[*] Done. {done} re-embedded, {failed} failed, stale rows purged.")
+    # Only purge stale (non-active-model) rows for memories this run actually
+    # replaced. Memories that failed to re-embed keep whatever embedding they
+    # had before -- including a total-failure run, which purges nothing.
+    if succeeded_ids:
+        placeholders = ", ".join("?" for _ in succeeded_ids)
+        conn.execute(
+            f"DELETE FROM embeddings WHERE model != ? AND memory_id IN ({placeholders})",
+            (vector_store.EMBEDDING_MODEL, *succeeded_ids),
+        )
+        conn.commit()
+
+    if failed and done == 0:
+        print(
+            f"[!] TOTAL FAILURE: 0 of {len(rows)} memories were re-embedded "
+            f"({failed} failed, e.g. Ollama unreachable). NOTHING WAS "
+            "PURGED -- all pre-existing embeddings are untouched. Fix the "
+            "embedder and re-run this script; it is safe to re-run."
+        )
+    elif failed:
+        print(
+            f"[!] PARTIAL FAILURE: {done} re-embedded, {failed} failed. Stale "
+            f"rows were purged ONLY for the {done} memories that were "
+            f"successfully re-embedded this run. The {failed} memories that "
+            "failed still have their OLD embedding in place (not purged, "
+            "not replaced -- semantic search for those rows may be stale or "
+            "absent). Fix the embedder and re-run this script to finish the "
+            "job; it is safe to re-run."
+        )
+    else:
+        print(f"[*] Done. {done} re-embedded, 0 failed, stale rows purged.")
 
 
 if __name__ == "__main__":
@@ -761,7 +808,11 @@ Ollama must be running.
 uv run python scripts/reindex_embeddings.py
 ```
 
-Expected: a `[*] Backed up database to ...bak-20260808` line, then `[*] Done. N re-embedded, 0 failed, stale rows purged.`
+Expected: a `[*] Backed up database to ...bak-20260808-143022-123456` line, then
+`[*] Done. N re-embedded, 0 failed, stale rows purged.` If instead you see a
+`[!] TOTAL FAILURE` or `[!] PARTIAL FAILURE` line, the old embeddings for whichever memories
+failed were deliberately left in place untouched -- fix the embedder (confirm Ollama is
+running and `nomic-embed-text` is pulled) and re-run.
 
 Confirm no rows survive under the old model:
 
@@ -1446,7 +1497,7 @@ Expected: 14 passed.
 - [ ] **Step 5: Run the whole suite**
 
 Run: `uv run pytest tests/ -v`
-Expected: 53 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`; every cumulative count below carries that +6 delta.)
+Expected: 57 passed. (Task 2's own count grew from 8 to 14 after the review-driven fixes to `memory/vault.py`, a +6 delta; Task 3's own count grew from 5 to 9 after a review-driven fix pass to `scripts/reindex_embeddings.py`, a further +4 delta; every cumulative count below carries both.)
 
 - [ ] **Step 6: Commit**
 
@@ -1821,7 +1872,7 @@ In `main.py`, replace the entire `event_loop` method (lines 272-294) with:
 - [ ] **Step 6: Verify the full suite still passes**
 
 Run: `uv run pytest tests/ -v`
-Expected: 66 passed.
+Expected: 70 passed.
 
 - [ ] **Step 7: Manual end-to-end verification**
 
