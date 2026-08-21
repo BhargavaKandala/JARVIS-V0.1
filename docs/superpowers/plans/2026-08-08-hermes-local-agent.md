@@ -1785,6 +1785,49 @@ def test_strip_is_a_noop_without_a_wake_word():
 
 def test_strip_of_the_bare_wake_word_returns_empty():
     assert wakeword.strip_wake_word("Jarvis") == ""
+
+
+def test_ambiguous_wake_word_mid_sentence_does_not_detect_or_strip():
+    text = "the garbage disposal is broken"
+    assert wakeword.detect_wake_word(text) is False
+    assert wakeword.strip_wake_word(text) == text
+
+
+def test_ambiguous_wake_word_at_start_detects_and_strips():
+    assert wakeword.detect_wake_word("Garbage, what's the weather?") is True
+    assert wakeword.strip_wake_word("Garbage, what's the weather?") == "what's the weather?"
+
+
+def test_leading_wake_word_strips_but_ambiguous_word_survives_later_in_text():
+    text = "Jarvis, take out the garbage"
+    assert wakeword.detect_wake_word(text) is True
+    stripped = wakeword.strip_wake_word(text)
+    assert stripped == "take out the garbage"
+    assert "garbage" in stripped
+
+
+def test_wake_word_genuinely_mid_sentence_strips_without_double_space():
+    text = "please help jarvis with something"
+    assert wakeword.detect_wake_word(text) is True
+    assert wakeword.strip_wake_word(text) == "please help with something"
+
+
+def test_no_wake_word_at_all_is_unchanged():
+    text = "let's grab lunch later"
+    assert wakeword.detect_wake_word(text) is False
+    assert wakeword.strip_wake_word(text) == text
+
+
+def test_none_and_empty_are_handled_without_raising():
+    assert wakeword.strip_wake_word("") == ""
+    assert wakeword.strip_wake_word(None) == ""
+    assert wakeword.detect_wake_word(None) is False
+
+
+def test_detect_and_strip_agree_when_detection_is_false():
+    text = "the garbage disposal is broken"
+    assert wakeword.detect_wake_word(text) is False
+    assert wakeword.strip_wake_word(text) == text
 ```
 
 - [ ] **Step 2: Run tests to verify they fail**
@@ -1807,25 +1850,47 @@ import re
 
 WAKE_WORDS = ["jarvis", "jaress", "travis", "garbage"]
 
+# "garbage" is a real, common English word -- unlike the other three homophones
+# -- so treating it as a wake word anywhere in an utterance causes false wakes
+# on ordinary speech ("the garbage disposal is broken"). Restrict it to the
+# start of the utterance, which is where a wake word actually falls. The
+# other homophones aren't ordinary words in this context, so they may still
+# appear anywhere (users address the assistant mid-sentence too).
+_AMBIGUOUS_WAKE_WORDS = {"garbage"}
+_ANYWHERE_WAKE_WORDS = [w for w in WAKE_WORDS if w not in _AMBIGUOUS_WAKE_WORDS]
+
+_TRAILING = r"[\s,.!?:;-]*"
+_anywhere_pattern = "|".join(re.escape(w) for w in _ANYWHERE_WAKE_WORDS)
+_leading_pattern = "|".join(re.escape(w) for w in sorted(_AMBIGUOUS_WAKE_WORDS))
+
+# Single pattern shared by detect_wake_word and strip_wake_word so the two
+# can never disagree about whether/where a wake word is present.
+_WAKE_WORD_RE = re.compile(
+    rf"^(?:{_leading_pattern})\b{_TRAILING}|\b(?:{_anywhere_pattern})\b{_TRAILING}",
+    re.IGNORECASE,
+)
+
 
 def detect_wake_word(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(word in lowered for word in WAKE_WORDS)
+    return _WAKE_WORD_RE.search(text or "") is not None
 
 
 def strip_wake_word(text: str) -> str:
     """Remove the first wake word and any punctuation trailing it."""
     if not text:
         return ""
-    pattern = "|".join(re.escape(word) for word in WAKE_WORDS)
-    stripped = re.sub(rf"\b({pattern})\b[\s,.!?:;-]*", "", text, count=1, flags=re.IGNORECASE)
+    stripped = _WAKE_WORD_RE.sub("", text, count=1)
     return stripped.strip()
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
 
 Run: `uv run pytest tests/test_wakeword.py -v`
-Expected: 8 passed.
+Expected: 15 passed. (Original 8 plus 7 added in a post-review fix pass: "garbage" is an ordinary
+English word, so matching it anywhere in an utterance caused false wakes on unrelated speech and
+silent transcript corruption; the fix restricts it to the start of the utterance -- the only place
+a wake word actually occurs -- while `jarvis`/`jaress`/`travis` still match anywhere, and both
+functions now share one regex so they can never disagree.)
 
 - [ ] **Step 5: Commit**
 
@@ -1971,12 +2036,13 @@ In `main.py`, replace the entire `event_loop` method (lines 272-294) with:
 - [ ] **Step 6: Verify the full suite still passes**
 
 Run: `uv run pytest tests/ -v`
-Expected: 77 passed. (This cumulative figure was already stale by 4 before an earlier fix pass --
+Expected: 84 passed. (This cumulative figure was already stale by 4 before an earlier fix pass --
 the prior sum of Tasks 1-7's own counts was 74, not the 70 previously stated here. A further +2
 delta carried in from Task 5's post-review fix pass -- see that task's Step 4 -- for a corrected
 total of 76. On top of that, Task 6's scope reduction to a single-brain router (see that task's
 post-implementation note) changed its own test count from 5 to 6 -- a further +1 delta -- for a
-corrected total of 77.)
+corrected total of 77. A further +7 delta carried in from Task 7's post-review fix pass for the
+"garbage" false-wake bug -- see that task's Step 4 -- for a corrected total of 84.)
 
 - [ ] **Step 7: Manual end-to-end verification**
 

@@ -35,3 +35,46 @@ def test_strip_is_a_noop_without_a_wake_word():
 
 def test_strip_of_the_bare_wake_word_returns_empty():
     assert wakeword.strip_wake_word("Jarvis") == ""
+
+
+def test_ambiguous_wake_word_mid_sentence_does_not_detect_or_strip():
+    text = "the garbage disposal is broken"
+    assert wakeword.detect_wake_word(text) is False
+    assert wakeword.strip_wake_word(text) == text
+
+
+def test_ambiguous_wake_word_at_start_detects_and_strips():
+    assert wakeword.detect_wake_word("Garbage, what's the weather?") is True
+    assert wakeword.strip_wake_word("Garbage, what's the weather?") == "what's the weather?"
+
+
+def test_leading_wake_word_strips_but_ambiguous_word_survives_later_in_text():
+    text = "Jarvis, take out the garbage"
+    assert wakeword.detect_wake_word(text) is True
+    stripped = wakeword.strip_wake_word(text)
+    assert stripped == "take out the garbage"
+    assert "garbage" in stripped
+
+
+def test_wake_word_genuinely_mid_sentence_strips_without_double_space():
+    text = "please help jarvis with something"
+    assert wakeword.detect_wake_word(text) is True
+    assert wakeword.strip_wake_word(text) == "please help with something"
+
+
+def test_no_wake_word_at_all_is_unchanged():
+    text = "let's grab lunch later"
+    assert wakeword.detect_wake_word(text) is False
+    assert wakeword.strip_wake_word(text) == text
+
+
+def test_none_and_empty_are_handled_without_raising():
+    assert wakeword.strip_wake_word("") == ""
+    assert wakeword.strip_wake_word(None) == ""
+    assert wakeword.detect_wake_word(None) is False
+
+
+def test_detect_and_strip_agree_when_detection_is_false():
+    text = "the garbage disposal is broken"
+    assert wakeword.detect_wake_word(text) is False
+    assert wakeword.strip_wake_word(text) == text
