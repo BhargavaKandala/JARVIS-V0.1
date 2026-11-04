@@ -136,6 +136,10 @@ FONT_TITLE = ("Courier New", 24, "bold")
 # Seconds after a reply during which speech is accepted without the wake word.
 FOLLOW_UP_WINDOW = 15
 
+# Resting placeholder for the text input, swapped for "working..." while a
+# typed turn is in flight.
+INPUT_PLACEHOLDER = "type a command..."
+
 class VaultCommandCenter(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -231,11 +235,54 @@ class VaultCommandCenter(ctk.CTk):
 
         # Audio I/O (Transcript)
         ctk.CTkLabel(self.right_panel, text="AUDIO I/O . TRANSCRIPT", font=FONT_HEADER, text_color=TEXT_COLOR).pack(anchor="w", pady=(30, 5), padx=10)
-        
+
+        # Packed before the console so the console's expand=True claims the
+        # space above it instead of squeezing the entry off the panel.
+        self.text_input = ctk.CTkEntry(self.right_panel, font=FONT_MAIN, fg_color="#111111",
+                                       text_color="#FFFFFF", border_color=ACCENT_COLOR,
+                                       border_width=1, corner_radius=0,
+                                       placeholder_text=INPUT_PLACEHOLDER)
+        self.text_input.pack(side="bottom", fill="x", padx=10, pady=(0, 10))
+        self.text_input.bind("<Return>", self.on_text_submit)
+
         self.console = ctk.CTkTextbox(self.right_panel, font=FONT_MAIN, fg_color="#111111", text_color=TEXT_COLOR, wrap="word", corner_radius=0)
         self.console.pack(fill="both", expand=True, padx=10, pady=(0, 10))
-        self.console.insert("0.0", "SYS> Audio engine active.\nSYS> Waiting for wake word...\n\n")
+        self.console.insert("0.0", "SYS> Audio engine active.\nSYS> Waiting for wake word...\nSYS> Type below to skip the wake word.\n\n")
         self.console.configure(state="disabled")
+
+    def on_text_submit(self, event=None):
+        """<Return> handler for the text input. Runs on the Tk main thread, so
+        it must not block: route_request() is a network round trip plus up to
+        five tool hops. Hand the turn to a worker and return immediately."""
+        text = self.text_input.get().strip()
+        if not text:
+            return
+
+        self.text_input.delete(0, "end")
+        self.text_input.configure(state="disabled", placeholder_text="working...")
+        self.log_to_console("USER", text)
+
+        threading.Thread(target=self.run_text_turn, args=(text,), daemon=True).start()
+
+    def run_text_turn(self, text):
+        """Worker-thread half of a typed turn. Deliberately does not call
+        speak() -- typing is the quiet path -- and does not touch the center
+        status labels, which event_loop rewrites every iteration anyway."""
+        try:
+            # No wake word check: typing is already an explicit address.
+            reply = route_request(text)
+            self.log_to_console("JARVIS", reply)
+            capture.enqueue(text, reply)
+        except Exception as e:
+            # route_request never raises, but log_to_console and capture.enqueue
+            # can. Mirror event_loop's guard so a failure here is visible rather
+            # than killing the thread silently.
+            self.log_to_console("SYS_ERROR", str(e))
+        finally:
+            # In finally so a raise above can't leave the input dead for the
+            # rest of the session.
+            self.after(0, lambda: self.text_input.configure(
+                state="normal", placeholder_text=INPUT_PLACEHOLDER))
 
     def animate_orb(self):
         """Simulates the rotating 3D node network on the canvas."""

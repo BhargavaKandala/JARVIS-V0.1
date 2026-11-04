@@ -1,3 +1,6 @@
+import threading
+import time
+
 import pytest
 
 from llm import router
@@ -82,3 +85,56 @@ def test_history_is_untouched_on_a_successful_turn(monkeypatch):
     router.handle("hello")
 
     assert router._gemini.conversation_history is sentinel
+
+
+# --- turn serialization ---------------------------------------------------
+#
+# Two callers can now reach handle() at once: the voice loop in main.py's
+# event_loop thread, and the GUI text input's per-submission worker thread.
+# They share llm.gemini.conversation_history, a module-level list, so an
+# interleaved pair of turns corrupts it the same way the trim bug above does.
+# handle() takes a module-level lock to serialize turns.
+
+def test_concurrent_turns_do_not_overlap(monkeypatch):
+    inside = []
+    overlapped = []
+
+    def slow_gemini(text):
+        inside.append(text)
+        if len(inside) > 1:
+            overlapped.append(list(inside))
+        time.sleep(0.05)
+        inside.remove(text)
+        return f"gemini: {text}"
+    monkeypatch.setattr(router, "ask_gemini", slow_gemini)
+
+    threads = [
+        threading.Thread(target=router.handle, args=(f"turn {i}",))
+        for i in range(4)
+    ]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5)
+
+    assert not any(t.is_alive() for t in threads), "handle() deadlocked"
+    assert overlapped == [], f"turns overlapped inside ask_gemini: {overlapped}"
+
+
+def test_lock_is_released_after_a_failed_turn(monkeypatch):
+    # The reset-on-exception path runs inside the lock. If the lock leaked on
+    # the way out, one rate-limited turn would wedge every later turn -- a
+    # worse version of the bug the reset exists to fix.
+    def boom(text):
+        raise RuntimeError("429 RESOURCE_EXHAUSTED")
+    monkeypatch.setattr(router, "ask_gemini", boom)
+    assert router.handle("first") == router.RATE_LIMIT_REPLY
+
+    monkeypatch.setattr(router, "ask_gemini", lambda text: f"gemini: {text}")
+    done = []
+    t = threading.Thread(target=lambda: done.append(router.handle("second")))
+    t.start()
+    t.join(timeout=5)
+
+    assert not t.is_alive(), "handle() deadlocked after a failed turn"
+    assert done == ["gemini: second"]
