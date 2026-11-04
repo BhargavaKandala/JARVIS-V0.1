@@ -13,15 +13,36 @@ error handling for cloud failures (quota exhaustion, any other exception)
 lives in exactly one place instead of being scattered through the GUI/voice
 loop. handle() must never raise -- it is called from the voice loop.
 """
+import threading
+
 import llm.gemini as _gemini
 from llm.gemini import ask_gemini
 
 RATE_LIMIT_REPLY = "Boss, Google is rate limiting my API. Give me a moment to cool down."
 GENERIC_ERROR_REPLY = "I hit an error in my cognitive engine."
 
+# Serializes whole turns. More than one caller can reach handle() at once --
+# the voice loop on main.py's event_loop thread and the GUI text input's
+# per-submission worker thread -- and they share gemini.conversation_history,
+# a module-level list. Interleaving two turns corrupts it the same way the
+# history trim described below does. The lock lives here rather than in the
+# GUI because the state it protects belongs to this layer, so every future
+# caller (e.g. automations/scheduler.py) is serialized without knowing about
+# it. Non-reentrant is safe: nothing calls handle() from inside handle().
+_turn_lock = threading.Lock()
+
 
 def handle(text: str) -> str:
-    """Answer one turn. Always returns a string that is safe to speak aloud."""
+    """Answer one turn. Always returns a string that is safe to speak aloud.
+
+    Thread-safe: concurrent callers are serialized, so a typed command and a
+    spoken one queue up rather than racing each other's history.
+    """
+    with _turn_lock:
+        return _handle_locked(text)
+
+
+def _handle_locked(text: str) -> str:
     try:
         return ask_gemini(text)
     except Exception as e:
