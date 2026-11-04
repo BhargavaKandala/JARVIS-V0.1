@@ -144,7 +144,7 @@ class VaultCommandCenter(ctk.CTk):
     def __init__(self):
         super().__init__()
         
-        self.title("V.A.U.L.T. - Jarvis OS")
+        self.title("Zenith AI - Jarvis OS")
         # Go fullscreen or large window to match the dashboard feel
         self.geometry("1400x800")
         self.configure(fg_color=BG_COLOR)
@@ -153,7 +153,7 @@ class VaultCommandCenter(ctk.CTk):
         self.top_frame = ctk.CTkFrame(self, fg_color=BG_COLOR, corner_radius=0)
         self.top_frame.pack(side="top", fill="x", padx=20, pady=(20, 10))
         
-        self.title_label = ctk.CTkLabel(self.top_frame, text="V.A.U.L.T.\nVOICE-ACTIVATED UNIFIED LOGIC TERMINAL", font=FONT_TITLE, text_color=TEXT_COLOR, justify="left")
+        self.title_label = ctk.CTkLabel(self.top_frame, text="ZENITH AI\nVOICE-ACTIVATED UNIFIED LOGIC TERMINAL", font=FONT_TITLE, text_color=TEXT_COLOR, justify="left")
         self.title_label.pack(side="left")
 
         self.status_nav = ctk.CTkLabel(self.top_frame, text="* CORE . IDLE    LINK . ONLINE    RUNNER . ALIVE", font=FONT_MAIN, text_color=ACCENT_COLOR)
